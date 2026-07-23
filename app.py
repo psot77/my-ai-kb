@@ -6,9 +6,8 @@ from groq import Groq
 # =====================================================================
 # 1. НАСТРОЙКИ КЛЮЧЕЙ
 # =====================================================================
-GROQ_API_KEY = st.secrets[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]        # Начинается с _...
-QDRANT_API_KEY = st.secrets[eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6ZWQ3NDM0YjgtNDEzMC00YWY1LTgyMDUtN2ZmYjBkNTAwNDA2In0.1JZ74vGLTv4SlSi08WhG-cxo8rPuM7WZ3csv_iShfYs]    # Ваш API-ключ Qdrant
-
+GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+QDRANT_API_KEY = st.secrets["QDRANT_API_KEY"]
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
