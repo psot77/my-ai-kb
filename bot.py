@@ -8,10 +8,12 @@ from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from groq import Groq
 
-# Настройка логирования
+# Подробное логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Ключи берем из переменных окружения
+logger.info("=== СТАРТ СКРИПТА BOT.PY ===")
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
@@ -19,38 +21,55 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Инициализация клиентов
-qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
-groq_client = Groq(api_key=GROQ_API_KEY)
-embedding_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+# Глобальные переменные ленивой инициализации
+_qdrant = None
+_groq_client = None
+_embedding_model = None
+
+def get_services():
+    """Загрузка нейросети и клиентов по требованию (экономия RAM на старте)"""
+    global _qdrant, _groq_client, _embedding_model
+    if _qdrant is None:
+        logger.info("Инициализация Qdrant, Groq и FastEmbed...")
+        _qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
+        _groq_client = Groq(api_key=GROQ_API_KEY)
+        _embedding_model = TextEmbedding(
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            threads=1
+        )
+        logger.info("Сервисы успешно загружены!")
+    return _qdrant, _groq_client, _embedding_model
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
     await update.message.reply_text(
         "👋 Здравствуйте! Я ваш виртуальный корпоративный ассистент.\n\n"
-        "Задайте мне любой вопрос текстом или **отправьте голосовое сообщение**, и я найду ответ в базе знаний!"
+        "Задайте мне любой вопрос текстом или отправьте голосовое сообщение!"
     )
 
 def search_rag_answer(query_text: str) -> str:
-    query_vector = list(embedding_model.embed([query_text]))[0].tolist()
-    
-    response = qdrant.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vector,
-        limit=3
-    )
-    search_results = response.points
-    max_score = max([hit.score for hit in search_results]) if search_results else 0.0
+    try:
+        qdrant_client, groq_cl, embed_mod = get_services()
+        query_vector = list(embed_mod.embed([query_text]))[0].tolist()
+        
+        response = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            limit=3
+        )
+        search_results = response.points
+        max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-    if not search_results or max_score < 0.35:
-        return "К сожалению, в корпоративной базе знаний пока нет подробных инструкций по этому вопросу."
+        if not search_results or max_score < 0.35:
+            return "К сожалению, в корпоративной базе знаний пока нет подробных инструкций по этому вопросу."
 
-    context_chunks = [
-        f"[Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
-        for hit in search_results
-    ]
-    context = "\n\n---\n\n".join(context_chunks)
+        context_chunks = [
+            f"[Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
+            for hit in search_results
+        ]
+        context = "\n\n---\n\n".join(context_chunks)
 
-    llm_prompt = f"""Ты — вежливый виртуальный ассистент корпоративной базы знаний.
+        llm_prompt = f"""Ты — вежливый виртуальный ассистент корпоративной базы знаний.
 Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
 
 --- ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ ---
@@ -61,56 +80,70 @@ def search_rag_answer(query_text: str) -> str:
 
 --- ОТВЕТ ---"""
 
-    res = groq_client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": llm_prompt}],
-        temperature=0.2
-    )
-    return res.choices[0].message.content
+        res = groq_cl.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": llm_prompt}],
+            temperature=0.2
+        )
+        return res.choices[0].message.content
+    except Exception as e:
+        logger.error(f"Ошибка в RAG: {e}", exc_info=True)
+        return f"⚠️ Произошла ошибка при поиске: {e}"
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    await update.message.reply_chat_action("typing")
-    
-    loop = asyncio.get_event_loop()
-    answer = await loop.run_in_executor(None, search_rag_answer, user_text)
-    await update.message.reply_text(answer)
+    try:
+        user_text = update.message.text
+        logger.info(f"Вопрос из Telegram: '{user_text}'")
+        await update.message.reply_chat_action("typing")
+        
+        loop = asyncio.get_running_loop()
+        answer = await loop.run_in_executor(None, search_rag_answer, user_text)
+        await update.message.reply_text(answer)
+    except Exception as e:
+        logger.error(f"Ошибка обработки текста: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_chat_action("typing")
-    
-    # Скачивание голосового файла из Telegram
-    voice_file = await context.bot.get_file(update.message.voice.file_id)
-    voice_bytes = await voice_file.download_as_bytearray()
-    
-    audio_io = io.BytesIO(voice_bytes)
-    audio_io.name = "voice.ogg"
+    try:
+        logger.info("Обработка голосового сообщения...")
+        await update.message.reply_chat_action("typing")
+        
+        _, groq_cl, _ = get_services()
+        
+        voice_file = await context.bot.get_file(update.message.voice.file_id)
+        voice_bytes = await voice_file.download_as_bytearray()
+        
+        audio_io = io.BytesIO(voice_bytes)
+        audio_io.name = "voice.ogg"
 
-    # Распознавание голоса через Groq Whisper API
-    transcription = groq_client.audio.transcriptions.create(
-        file=audio_io,
-        model="whisper-large-v3-turbo",
-        prompt="Запрос на русском языке по базе знаний",
-        response_format="text"
-    )
-    prompt_text = str(transcription).strip()
-    
-    await update.message.reply_text(f"🎙️ *Распознано:* `{prompt_text}`", parse_mode="Markdown")
-    
-    # Поиск ответа
-    loop = asyncio.get_event_loop()
-    answer = await loop.run_in_executor(None, search_rag_answer, prompt_text)
-    await update.message.reply_text(answer)
+        transcription = groq_cl.audio.transcriptions.create(
+            file=audio_io,
+            model="whisper-large-v3-turbo",
+            prompt="Запрос на русском языке по базе знаний",
+            response_format="text"
+        )
+        prompt_text = str(transcription).strip()
+        logger.info(f"Голос распознан: '{prompt_text}'")
+        
+        await update.message.reply_text(f"🎙️ *Распознано:* `{prompt_text}`", parse_mode="Markdown")
+        
+        loop = asyncio.get_running_loop()
+        answer = await loop.run_in_executor(None, search_rag_answer, prompt_text)
+        await update.message.reply_text(answer)
+    except Exception as e:
+        logger.error(f"Ошибка голосового ввода: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Ошибка при обработке аудио: {e}")
 
 if __name__ == '__main__':
     if not TELEGRAM_BOT_TOKEN:
-        print("Ошибка: TELEGRAM_BOT_TOKEN не задан!")
+        logger.critical("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не задан!")
         exit(1)
         
+    logger.info("Запуск Telegram бота...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    print("🤖 Telegram-бот успешно запущен и готов к работе!")
+    logger.info("🤖 УСПЕХ: Telegram-бот успешно запущен и слушает сообщения!")
     app.run_polling()
