@@ -1,24 +1,66 @@
 import os
+import socket
+import json
+import urllib.request
+import logging
 import io
 import asyncio
-import logging
 import time
 import requests
-import urllib3.util.connection as urllib3_cn
-
-# 1. ОТКЛЮЧЕНИЕ IPV6 (Решает ошибку Errno -5 в сети Render)
-urllib3_cn.HAS_IPV6 = False
-
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from qdrant_client import QdrantClient
-from groq import Groq
 
 # Подробное логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ BOT.PY (IPV4 ONLY + NEW HF ROUTER API) ===")
+# =====================================================================
+# 1. АВТОМАТИЧЕСКИЙ DNS-OVER-HTTPS (DoH) ДЛЯ ОБХОДА СБОЕВ Dns НА RENDER
+# =====================================================================
+DNS_CACHE = {}
+
+def resolve_via_google_doh(hostname: str) -> str:
+    """Прямое получение IP-адреса через Google DNS (8.8.8.8) без участия DNS Render"""
+    if hostname in DNS_CACHE:
+        return DNS_CACHE[hostname]
+    try:
+        url = f"https://8.8.8.8/resolve?name={hostname}&type=A"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            if data.get("Status") == 0 and "Answer" in data:
+                for ans in data["Answer"]:
+                    if ans.get("type") == 1:  # Запись A (IPv4)
+                        ip = ans.get("data")
+                        DNS_CACHE[hostname] = ip
+                        logger.info(f"🌐 DoH успешно распознал {hostname} -> {ip}")
+                        return ip
+    except Exception as e:
+        logger.warning(f"Не удалось распознать {hostname} через DoH: {e}")
+    return None
+
+old_getaddrinfo = socket.getaddrinfo
+
+def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    try:
+        # Пробуем стандартное системное разрешение по IPv4
+        return old_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+    except socket.gaierror:
+        # Если системный DNS Render выбил ошибку, запрашиваем Google DoH напрямую по IP
+        ip = resolve_via_google_doh(host)
+        if ip:
+            return old_getaddrinfo(ip, port, socket.AF_INET, type, proto, flags)
+        raise
+
+socket.getaddrinfo = custom_getaddrinfo
+
+# =====================================================================
+# 2. НАСТРОЙКИ КЛИЕНТОВ И ПЕРЕМЕННЫХ
+# =====================================================================
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from qdrant_client import QdrantClient
+from groq import Groq
+
+logger.info("=== СТАРТ BOT.PY (С АВТО-DNS ОБХОДОМ) ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -28,21 +70,20 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Клиенты баз данных
+# Инициализация облачных сервисов
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# =====================================================================
+# 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ ЧЕРЕЗ HUGGING FACE ROUTER API
+# =====================================================================
 def get_cloud_embedding(text: str) -> list:
-    """Получение вектора через новый Hugging Face Router API"""
     urls = [
         "https://router.huggingface.co/hf-inference/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     ]
     
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    headers = {"Content-Type": "application/json"}
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN.strip()}"
         
@@ -59,21 +100,22 @@ def get_cloud_embedding(text: str) -> list:
                         data = data[0]
                     if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
                         return [float(x) for x in data]
-                    raise Exception(f"Неожиданный формат ответа: {data}")
+                    raise Exception(f"Формат ответа от HF: {data}")
                 elif response.status_code == 503:
-                    logger.warning(f"Модель разогревается (503) на {url}. Ждем 3 сек... (Попытка {attempt + 1}/3)")
+                    logger.warning(f"Модель разогревается (503). Пауза 3 сек... (Попытка {attempt + 1}/3)")
                     time.sleep(3)
                 else:
                     last_error = f"HTTP {response.status_code}: {response.text}"
-                    logger.warning(f"Ошибка {url}: {last_error}")
                     time.sleep(1)
             except Exception as e:
                 last_error = str(e)
-                logger.warning(f"Ошибка соединения с {url}: {e}")
                 time.sleep(1)
                 
-    raise Exception(f"Не удалось получить вектор текста: {last_error}")
+    raise Exception(f"Ошибка получения вектора: {last_error}")
 
+# =====================================================================
+# 4. ОБРАБОТЧИКИ СООБЩЕНИЙ TELEGRAM
+# =====================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
     await update.message.reply_text(
@@ -176,5 +218,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Бот успешно запущен!")
+    logger.info("🤖 УСПЕХ: Бот запущен!")
     app.run_polling()
