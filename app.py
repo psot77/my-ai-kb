@@ -302,6 +302,10 @@ if "messages" not in st.session_state:
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
+# Счетчик для динамического сброса компонента аудиозаписи
+if "voice_key_counter" not in st.session_state:
+    st.session_state.voice_key_counter = 0
+
 # =====================================================================
 # 7. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
@@ -483,7 +487,7 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД (ИСПРАВЛЕННЫЙ РОБУСТНЫЙ ПЛЕЕР)
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД (БЕССБОЙНЫЙ ДИНАМИЧЕСКИЙ КЛЮЧ)
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
@@ -518,40 +522,41 @@ with tab_dict["💬 Чат по проекту"]:
                             st.session_state[f"show_dislike_form_{msg_idx}"] = False
                             st.rerun()
 
-    # ГОЛОСОВОЙ ВВОД ВОПРОСА ЧЕРЕЗ МИКРОФОН
+    # ГОЛОСОВОЙ ВВОД ВОПРОСА ЧЕРЕЗ МИКРОФОН (С ДИНАМИЧЕСКИМ КЛЮЧОМ)
     st.markdown("---")
     c_v1, c_v2 = st.columns([2, 5])
     with c_v1:
         st.write("🎙️ **Задать вопрос голосом:**")
-        audio_value = st.audio_input("Запись аудио", key="voice_recorder", label_visibility="collapsed")
+        audio_value = st.audio_input(
+            "Запись аудио", 
+            key=f"voice_recorder_{st.session_state.voice_key_counter}", 
+            label_visibility="collapsed"
+        )
     
     prompt = None
     
-    # Защищенная обработка записанной аудиозаписи
+    # Обработка записи
     if audio_value is not None:
-        audio_bytes = audio_value.read()
-        audio_value.seek(0) # Важно: возвращаем каретку в начало!
-        
-        audio_hash = hashlib.md5(audio_bytes).hexdigest()
-        
-        if st.session_state.get("last_processed_audio_hash") != audio_hash:
-            with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
-                try:
-                    audio_file = io.BytesIO(audio_bytes)
-                    audio_file.name = "audio.wav"
-                    
-                    transcription = groq_client.audio.transcriptions.create(
-                        file=audio_file,
-                        model="whisper-large-v3-turbo",
-                        prompt="Запрос на русском языке по базе знаний",
-                        response_format="text"
-                    )
-                    prompt = str(transcription).strip()
-                    st.session_state["last_processed_audio_hash"] = audio_hash
-                    log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
-                    st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
-                except Exception as e:
-                    st.error(f"Ошибка распознавания голоса: {e}")
+        with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
+            try:
+                audio_bytes = audio_value.read()
+                audio_file = io.BytesIO(audio_bytes)
+                audio_file.name = "audio.wav"
+                
+                transcription = groq_client.audio.transcriptions.create(
+                    file=audio_file,
+                    model="whisper-large-v3-turbo",
+                    prompt="Запрос на русском языке по базе знаний",
+                    response_format="text"
+                )
+                prompt = str(transcription).strip()
+                
+                # Увеличиваем счетчик ключа, чтобы сбросить виджет записи и убрать ошибку в UI!
+                st.session_state.voice_key_counter += 1
+                log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
+                st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
+            except Exception as e:
+                st.error(f"Ошибка распознавания голоса: {e}")
 
     text_prompt = st.chat_input(f"Или введите вопрос по проекту '{selected_project}'...")
     if text_prompt:
