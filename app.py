@@ -42,7 +42,7 @@ def init_services():
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
     
-    for field in ["section", "project"]:
+    for field in ["section", "project", "source_file"]:
         try:
             qdrant.create_payload_index(
                 collection_name=COLLECTION_NAME,
@@ -83,13 +83,32 @@ if "messages" not in st.session_state:
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
-# Функция экспорт истории (объявлена до вызова в боковом меню)
 def export_chat_history():
     text = f"# 📝 История диалога (Проект: {st.session_state.get('selected_project', 'Общий')})\n\n"
     for msg in st.session_state.messages:
         role = "👤 **Пользователь**" if msg["role"] == "user" else "🤖 **Ассистент**"
         text += f"{role}:\n{msg['content']}\n\n---\n\n"
     return text
+
+# Функция получения всех файлов из Qdrant с группировкой по разделам
+def get_db_files_summary():
+    try:
+        scroll_res, _ = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=10000,
+            with_payload=["source_file", "section"],
+            with_vectors=False
+        )
+        files_by_section = {}
+        for point in scroll_res:
+            sec = point.payload.get("section", "Общий раздел")
+            src = point.payload.get("source_file", "Неизвестный файл")
+            if sec not in files_by_section:
+                files_by_section[sec] = {}
+            files_by_section[sec][src] = files_by_section[sec].get(src, 0) + 1
+        return files_by_section
+    except Exception:
+        return {}
 
 # =====================================================================
 # 4. БОКОВАЯ ПАНЕЛЬ
@@ -167,9 +186,10 @@ with st.sidebar:
 # =====================================================================
 st.title(f"🤖 Ассистент — [{selected_project}]")
 
-tab_chat, tab_upload, tab_analytics = st.tabs([
+tab_chat, tab_upload, tab_manage, tab_analytics = st.tabs([
     "💬 Чат по проекту", 
-    "📁 Загрузка документов по разделам", 
+    "📁 Загрузка документов", 
+    "🗂️ Управление файлами", 
     "📈 Аналитика и Графики"
 ])
 
@@ -219,7 +239,7 @@ with tab_chat:
 
                 if not search_results:
                     sections_str = ", ".join([f"'{s}'" for s in active_sections]) if active_sections else "нет подключенных разделов"
-                    answer = f"В разделах ({sections_str}) пока не найдено подходящей информации. Загрузите `.md` файлы во вкладке **'Загрузка документов по разделам'**."
+                    answer = f"В разделах ({sections_str}) пока не найдено подходящей информации. Загрузите `.md` файлы во вкладке **'Загрузка документов'**."
                     st.write(answer)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
                 else:
@@ -345,7 +365,92 @@ with tab_upload:
             st.rerun()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 3: АНАЛИТИКА И ГРАФИКИ
+# ВКЛАДКА 3: УПРАВЛЕНИЕ ФАЙЛАМИ И РАЗДЕЛАМИ (НОВАЯ ФУНКЦИЯ)
+# ---------------------------------------------------------------------
+with tab_manage:
+    st.subheader("🗂️ Обзор, перемещение и удаление файлов базы знаний")
+    st.caption("Здесь вы можете перераспределять файлы между разделами или удалять устаревшие инструкции.")
+
+    files_by_sec = get_db_files_summary()
+
+    if not files_by_sec:
+        st.info("В базе данных Qdrant пока нет загруженных файлов.")
+    else:
+        # Синхронизируем списки разделов из базы
+        for sec in files_by_sec.keys():
+            if sec not in st.session_state.sections:
+                st.session_state.sections.append(sec)
+
+        for sec_name, files_dict in files_by_sec.items():
+            with st.expander(f"📁 Раздел: **{sec_name}** ({len(files_dict)} файлов)", expanded=True):
+                for fname, chunk_cnt in files_dict.items():
+                    st.markdown(f"📄 **{fname}** — `{chunk_cnt} фрагментов`")
+                    
+                    c_move, c_del = st.columns([3, 1])
+                    
+                    with c_move:
+                        # Форма перемещения
+                        other_sections = [s for s in st.session_state.sections if s != sec_name]
+                        if other_sections:
+                            dest_sec = st.selectbox(
+                                "Переместить в раздел:", 
+                                options=other_sections, 
+                                key=f"sel_{sec_name}_{fname}"
+                            )
+                            if st.button("🚚 Переместить", key=f"btn_m_{sec_name}_{fname}"):
+                                with st.spinner("Перемещение..."):
+                                    # Находим ID всех чанков файла
+                                    pts, _ = qdrant.scroll(
+                                        collection_name=COLLECTION_NAME,
+                                        scroll_filter=Filter(
+                                            must=[
+                                                FieldCondition(key="source_file", match=MatchValue(value=fname)),
+                                                FieldCondition(key="section", match=MatchValue(value=sec_name))
+                                            ]
+                                        ),
+                                        limit=10000,
+                                        with_payload=False,
+                                        with_vectors=False
+                                    )
+                                    p_ids = [p.id for p in pts]
+                                    if p_ids:
+                                        qdrant.set_payload(
+                                            collection_name=COLLECTION_NAME,
+                                            payload={"section": dest_sec},
+                                            points=p_ids
+                                        )
+                                        st.success(f"Файл '{fname}' перемещен в раздел '{dest_sec}'!")
+                                        st.rerun()
+
+                    with c_del:
+                        st.write("") # Отступ
+                        st.write("")
+                        if st.button("🗑️ Удалить файл", key=f"btn_d_{sec_name}_{fname}", type="primary"):
+                            with st.spinner("Удаление..."):
+                                pts, _ = qdrant.scroll(
+                                    collection_name=COLLECTION_NAME,
+                                    scroll_filter=Filter(
+                                        must=[
+                                            FieldCondition(key="source_file", match=MatchValue(value=fname)),
+                                            FieldCondition(key="section", match=MatchValue(value=sec_name))
+                                        ]
+                                    ),
+                                    limit=10000,
+                                    with_payload=False,
+                                    with_vectors=False
+                                )
+                                p_ids = [p.id for p in pts]
+                                if p_ids:
+                                    qdrant.delete(
+                                        collection_name=COLLECTION_NAME,
+                                        points_selector=p_ids
+                                    )
+                                    st.success(f"Файл '{fname}' полностью удален из базы!")
+                                    st.rerun()
+                    st.divider()
+
+# ---------------------------------------------------------------------
+# ВКЛАДКА 4: АНАЛИТИКА И ГРАФИКИ
 # ---------------------------------------------------------------------
 with tab_analytics:
     st.subheader("📈 Аналитика производительности и использования LLM")
