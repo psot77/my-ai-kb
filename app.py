@@ -16,12 +16,12 @@ from qdrant_client.models import (
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from groq import Groq
 
-# Импорты парсеров документов
+# Парсеры документов
 from pypdf import PdfReader
 from docx import Document
 
 # =====================================================================
-# 1. НАСТРОЙКИ КЛЮЧЕЙ И СТРАНИЦЫ
+# 1. НАСТРОЙКИ КЛЮЧЕЙ, СТРАНИЦЫ И ТАЙМ-АУТА
 # =====================================================================
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 QDRANT_API_KEY = st.secrets["QDRANT_API_KEY"]
@@ -29,6 +29,9 @@ QDRANT_API_KEY = st.secrets["QDRANT_API_KEY"]
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
+
+# Время неактивности до автовыхода (15 минут)
+SESSION_TIMEOUT_MINUTES = 15
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
 
@@ -49,10 +52,9 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 # =====================================================================
-# 2. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ (PDF, DOCX, TXT, MD)
+# 2. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ
 # =====================================================================
 def extract_text_from_file(uploaded_file) -> str:
-    """Извлечение чистого текста из любых форматов файлов"""
     fname = uploaded_file.name.lower()
     try:
         if fname.endswith(".pdf"):
@@ -64,14 +66,12 @@ def extract_text_from_file(uploaded_file) -> str:
             paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
             return "\n\n".join(paragraphs)
         else:
-            # .txt, .md
             return uploaded_file.read().decode("utf-8", errors="ignore")
     except Exception as e:
         st.error(f"Ошибка при чтении файла {uploaded_file.name}: {e}")
         return ""
 
 def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
-    """Универсальное разделение текста на чанки по абзацам"""
     paragraphs = text.split("\n\n")
     chunks = []
     current_chunk = ""
@@ -93,7 +93,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
     return chunks if chunks else [text]
 
 # =====================================================================
-# 3. ФУНКЦИИ ОПРЕДЕЛЕНИЯ IP И СТРАНЫ (GeoIP)
+# 3. GeoIP ФУНКЦИИ (IP, СТРАНА И КООРДИНАТЫ ДЛЯ КАРТЫ)
 # =====================================================================
 def get_client_ip() -> str:
     try:
@@ -107,19 +107,26 @@ def get_client_ip() -> str:
         pass
     return "127.0.0.1"
 
-def get_country_by_ip(ip: str) -> str:
+def get_geoip_details(ip: str) -> dict:
+    """Получение страны, города, широты и долготы по IP"""
+    default_res = {"country": "Неизвестно", "city": "Неизвестно", "lat": None, "lon": None}
     if ip in ["127.0.0.1", "localhost"] or ip.startswith("192.168.") or ip.startswith("10."):
-        return "Локальная сеть / Dev"
+        return {"country": "Локальная сеть", "city": "Dev", "lat": 50.4501, "lon": 30.5234} # Координаты по умолчанию
     try:
-        url = f"http://ip-api.com/json/{ip}?fields=country,status"
+        url = f"http://ip-api.com/json/{ip}?fields=country,city,lat,lon,status"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=1.5) as response:
             data = json.loads(response.read().decode())
             if data.get("status") == "success":
-                return data.get("country", "Неизвестно")
+                return {
+                    "country": data.get("country", "Неизвестно"),
+                    "city": data.get("city", "Неизвестно"),
+                    "lat": data.get("lat"),
+                    "lon": data.get("lon")
+                }
     except Exception:
         pass
-    return "Неизвестно"
+    return default_res
 
 # =====================================================================
 # 4. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
@@ -171,14 +178,15 @@ qdrant, groq_client, embedding_model = init_services()
 # =====================================================================
 # 5. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
 # =====================================================================
-def log_event(action: str, details: str, ip: str = None, country: str = None, username: str = None, role: str = None):
+def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
         user_info = st.session_state.get("current_user") or {}
         
         req_username = username if username else user_info.get("username", "Гость")
         req_role = role if role else user_info.get("role", "guest")
         req_ip = ip if ip else user_info.get("ip", get_client_ip())
-        req_country = country if country else user_info.get("country", get_country_by_ip(req_ip))
+        
+        geo = get_geoip_details(req_ip)
         
         log_point = PointStruct(
             id=uuid.uuid4().hex,
@@ -190,7 +198,10 @@ def log_event(action: str, details: str, ip: str = None, country: str = None, us
                 "action": action,
                 "details": details,
                 "ip": req_ip,
-                "country": req_country
+                "country": geo.get("country", "Неизвестно"),
+                "city": geo.get("city", "Неизвестно"),
+                "lat": geo.get("lat"),
+                "lon": geo.get("lon")
             }
         )
         qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
@@ -214,6 +225,9 @@ def get_audit_logs():
                 "role": p.get("role", "guest"),
                 "ip": p.get("ip", "127.0.0.1"),
                 "country": p.get("country", "Неизвестно"),
+                "city": p.get("city", "Неизвестно"),
+                "lat": p.get("lat"),
+                "lon": p.get("lon"),
                 "action": p.get("action", "UNKNOWN"),
                 "details": p.get("details", "")
             })
@@ -302,12 +316,34 @@ if "messages" not in st.session_state:
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
-# Счетчик для динамического сброса компонента аудиозаписи
 if "voice_key_counter" not in st.session_state:
     st.session_state.voice_key_counter = 0
 
 # =====================================================================
-# 7. ЭКРАН ВХОДА В СИСТЕМУ
+# 7. АВТОМАТИЧЕСКИЙ ТАЙМ-АУТ СЕССИИ ПРИ НЕАКТИВНОСТИ
+# =====================================================================
+if st.session_state.logged_in:
+    current_time = time.time()
+    last_act = st.session_state.get("last_activity_time", current_time)
+    
+    # Если прошло больше SESSION_TIMEOUT_MINUTES
+    if (current_time - last_act) > (SESSION_TIMEOUT_MINUTES * 60):
+        c_user = st.session_state.get("current_user", {})
+        u_rec = st.session_state.users_db.get(c_user.get("username", ""))
+        if u_rec and u_rec.get("active_sessions", 0) > 0:
+            u_rec["active_sessions"] -= 1
+            
+        log_event("SESSION_TIMEOUT", f"Сессия автоматически завершена из-за неактивности ({SESSION_TIMEOUT_MINUTES} мин)")
+        st.session_state.logged_in = False
+        st.session_state.current_user = None
+        st.session_state.timeout_message = f"⏳ Ваша сессия завершена автоматически из-за отсутствия активности более {SESSION_TIMEOUT_MINUTES} минут."
+        st.rerun()
+    else:
+        # Обновляем отметку времени последней активности
+        st.session_state.last_activity_time = current_time
+
+# =====================================================================
+# 8. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -315,9 +351,14 @@ if not st.session_state.logged_in:
         st.markdown("<h1 style='text-align: center;'>🛡️ Вход в AI Базу Знаний</h1>", unsafe_allow_html=True)
         st.caption("Корпоративная авторизация с контролем безопасности.")
         
+        # Если произошел тайм-аут
+        if st.session_state.get("timeout_message"):
+            st.warning(st.session_state["timeout_message"])
+            st.session_state["timeout_message"] = None
+
         client_ip = get_client_ip()
-        client_country = get_country_by_ip(client_ip)
-        st.info(f"🌐 Ваш IP: `{client_ip}` | Страна: **{client_country}**")
+        geo_info = get_geoip_details(client_ip)
+        st.info(f"🌐 Ваш IP: `{client_ip}` | Страна: **{geo_info['country']}** ({geo_info['city']})")
 
         with st.form("login_form"):
             user_input = st.text_input("Логин:")
@@ -330,37 +371,39 @@ if not st.session_state.logged_in:
 
                 if not user_record:
                     st.error("Неверный логин или пароль")
-                    log_event("LOGIN_FAILED", f"Попытка входа с несуществующим логином '{clean_user}'", client_ip, client_country, clean_user, "guest")
+                    log_event("LOGIN_FAILED", f"Попытка входа с несуществующим логином '{clean_user}'", ip=client_ip, username=clean_user, role="guest")
                 elif user_record.get("is_blocked", False):
                     st.error("❌ Ваш аккаунт заблокирован! Обратитесь к Собственнику.")
-                    log_event("LOGIN_BLOCKED", f"Попытка входа в заблокированный аккаунт '{clean_user}'", client_ip, client_country, clean_user, user_record.get("role", "guest"))
+                    log_event("LOGIN_BLOCKED", f"Попытка входа в заблокированный аккаунт '{clean_user}'", ip=client_ip, username=clean_user, role=user_record.get("role", "guest"))
                 elif user_record.get("active_sessions", 0) >= user_record.get("max_connections", 1):
                     st.error(f"❌ Превышен лимит одновременных подключений ({user_record['max_connections']})!")
-                    log_event("LOGIN_LIMIT_EXCEEDED", f"Превышен лимит сессий для '{clean_user}'", client_ip, client_country, clean_user, user_record.get("role", "guest"))
+                    log_event("LOGIN_LIMIT_EXCEEDED", f"Превышен лимит сессий для '{clean_user}'", ip=client_ip, username=clean_user, role=user_record.get("role", "guest"))
                 elif user_record["password"] != hash_password(pass_input):
                     user_record["failed_attempts"] = user_record.get("failed_attempts", 0) + 1
                     attempts = user_record["failed_attempts"]
                     
                     if attempts >= 3:
                         user_record["is_blocked"] = True
-                        log_event("AUTO_BLOCK", f"Автоматическая блокировка аккаунта '{clean_user}' после 3 ошибок", client_ip, client_country, clean_user, user_record.get("role", "guest"))
+                        log_event("AUTO_BLOCK", f"Автоматическая блокировка аккаунта '{clean_user}' после 3 ошибок", ip=client_ip, username=clean_user, role=user_record.get("role", "guest"))
                         st.error("❌ Аккаунт заблокирован из-за 3 неверных попыток ввода пароля!")
                     else:
-                        log_event("LOGIN_FAILED", f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", client_ip, client_country, clean_user, user_record.get("role", "guest"))
+                        log_event("LOGIN_FAILED", f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", ip=client_ip, username=clean_user, role=user_record.get("role", "guest"))
                         st.error(f"Неверный пароль! Осталось попыток: {3 - attempts}")
                 else:
                     user_record["failed_attempts"] = 0
                     user_record["active_sessions"] = user_record.get("active_sessions", 0) + 1
                     
                     st.session_state.logged_in = True
+                    st.session_state.last_activity_time = time.time()
                     st.session_state.current_user = {
                         "username": clean_user,
                         "role": user_record["role"],
                         "name": user_record["name"],
                         "ip": client_ip,
-                        "country": client_country
+                        "country": geo_info["country"],
+                        "city": geo_info["city"]
                     }
-                    log_event("LOGIN_SUCCESS", f"Успешный вход пользователя '{user_record['name']}'", client_ip, client_country, clean_user, user_record["role"])
+                    log_event("LOGIN_SUCCESS", f"Успешный вход пользователя '{user_record['name']}'", ip=client_ip, username=clean_user, role=user_record["role"])
                     st.success("Успешная авторизация!")
                     st.rerun()
 
@@ -374,7 +417,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 8. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И НАСТРОЙКАМИ
+# 9. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И НАСТРОЙКАМИ
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -389,6 +432,7 @@ with st.sidebar:
     st.markdown(f"### {user_data['name']}")
     st.caption(f"Роль: **{role_badges.get(user_role, user_role)}**")
     st.caption(f"IP: `{user_data.get('ip', '127.0.0.1')}` ({user_data.get('country', 'Неизвестно')})")
+    st.caption(f"⏱️ Автовыход при неактивности: **{SESSION_TIMEOUT_MINUTES} мин**")
     
     if st.button("🚪 Выйти из аккаунта", use_container_width=True):
         u_rec = st.session_state.users_db.get(user_data["username"])
@@ -471,7 +515,7 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 9. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
+# 10. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
 # =====================================================================
 st.title(f"🤖 AI Ассистент — [{selected_project}]")
 
@@ -487,7 +531,7 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД (БЕССБОЙНЫЙ ДИНАМИЧЕСКИЙ КЛЮЧ)
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
@@ -522,7 +566,7 @@ with tab_dict["💬 Чат по проекту"]:
                             st.session_state[f"show_dislike_form_{msg_idx}"] = False
                             st.rerun()
 
-    # ГОЛОСОВОЙ ВВОД ВОПРОСА ЧЕРЕЗ МИКРОФОН (С ДИНАМИЧЕСКИМ КЛЮЧОМ)
+    # ГОЛОСОВОЙ ВВОД ВОПРОСА ЧЕРЕЗ МИКРОФОН
     st.markdown("---")
     c_v1, c_v2 = st.columns([2, 5])
     with c_v1:
@@ -535,7 +579,6 @@ with tab_dict["💬 Чат по проекту"]:
     
     prompt = None
     
-    # Обработка записи
     if audio_value is not None:
         with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
             try:
@@ -550,8 +593,6 @@ with tab_dict["💬 Чат по проекту"]:
                     response_format="text"
                 )
                 prompt = str(transcription).strip()
-                
-                # Увеличиваем счетчик ключа, чтобы сбросить виджет записи и убрать ошибку в UI!
                 st.session_state.voice_key_counter += 1
                 log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
                 st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
@@ -793,14 +834,15 @@ if "📈 Аналитика" in tab_dict:
             st.line_chart(df_m.set_index("Запрос №")[["Время ответа (сек)"]])
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ, ПРОБЕЛЫ В ЗНАНИЯХ & БЕЗОПАСНОСТЬ
+# ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ, КАРТА ПОДКЛЮЧЕНИЙ & БЕЗОПАСНОСТЬ
 # ---------------------------------------------------------------------
 if "📋 Журнал логов & Безопасность" in tab_dict:
     with tab_dict["📋 Журнал логов & Безопасность"]:
-        st.subheader("👑 Безопасность и Аналитика Качества")
+        st.subheader("👑 Безопасность и География Подключений")
         
-        sub_tab_logs, sub_tab_gaps, sub_tab_users = st.tabs([
-            "📜 Полный Журнал Логов (GeoIP)", 
+        sub_tab_logs, sub_tab_map, sub_tab_gaps, sub_tab_users = st.tabs([
+            "📜 Полный Журнал Логов", 
+            "🗺️ Карта Входов (GeoIP)",
             "💡 Пробелы в знаниях & Отзывы", 
             "👥 Управление Аккаунтами"
         ])
@@ -808,16 +850,41 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
         logs_data = get_audit_logs()
         df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
 
+        # 1. ЖУРНАЛ ЛОГОВ
         with sub_tab_logs:
             st.write("История всех действий фиксируется в Qdrant Cloud:")
             if df_logs_all.empty:
                 st.info("Журнал аудита пуст.")
             else:
                 st.dataframe(
-                    df_logs_all[["timestamp", "username", "role", "ip", "country", "action", "details"]], 
+                    df_logs_all[["timestamp", "username", "role", "ip", "country", "city", "action", "details"]], 
                     use_container_width=True
                 )
 
+        # 2. КАРТА ВХОДОВ (GeoIP)
+        with sub_tab_map:
+            st.markdown("### 🗺️ Интерактивная карта геопозиций входов")
+            st.caption("Отображение точек подключения пользователей на основе данных GeoIP:")
+            
+            if not df_logs_all.empty and "lat" in df_logs_all.columns and "lon" in df_logs_all.columns:
+                # Фильтруем записи с корректными координатами
+                df_map_data = df_logs_all.dropna(subset=["lat", "lon"]).copy()
+                df_map_data["lat"] = pd.to_numeric(df_map_data["lat"], errors="coerce")
+                df_map_data["lon"] = pd.to_numeric(df_map_data["lon"], errors="coerce")
+                df_map_clean = df_map_data.dropna(subset=["lat", "lon"])
+                
+                if not df_map_clean.empty:
+                    st.map(df_map_clean[["lat", "lon"]], zoom=2)
+                    st.divider()
+                    st.markdown("### 🌐 Распределение входов по странам и городам")
+                    geo_summary = df_map_clean.groupby(["country", "city", "ip"]).size().reset_index(name="Подключений")
+                    st.dataframe(geo_summary, use_container_width=True)
+                else:
+                    st.info("Координаты подключений пока не зафиксированы.")
+            else:
+                st.info("Нет данных для отображения карты.")
+
+        # 3. ПРОБЕЛЫ В ЗНАНИЯХ
         with sub_tab_gaps:
             st.markdown("### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)")
             st.caption("Автоматически зафиксированные вопросы, где релевантность базы знаний была < 35%:")
@@ -836,8 +903,6 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
 
             st.divider()
             st.markdown("### 👎 2. Замечания и негативные отзывы пользователей")
-            st.caption("Здесь показаны комментарии пользователей с исходным вопросом и пояснениями:")
-            
             if not df_logs_all.empty and "action" in df_logs_all.columns:
                 df_neg = df_logs_all[df_logs_all["action"] == "FEEDBACK_NEGATIVE"]
                 if df_neg.empty:
@@ -862,6 +927,7 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                         use_container_width=True
                     )
 
+        # 4. УПРАВЛЕНИЕ АККАУНТАМИ
         with sub_tab_users:
             st.markdown("### 👥 Список зарегистрированных пользователей")
             
