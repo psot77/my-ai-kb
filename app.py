@@ -109,15 +109,15 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 4. ФУНКЦИЯ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+# 4. НАДЕЖНАЯ ФУНКЦИЯ ЛОГИРОВАНИЯ И ЧТЕНИЯ ЛОГОВ
 # =====================================================================
-def log_event(action: str, details: str, ip: str = None, country: str = None):
-    """Запись события аудита с фиксированием IP и Страны в Qdrant"""
+def log_event(action: str, details: str, ip: str = None, country: str = None, username: str = None, role: str = None):
+    """Запись события аудита с абсолютной защитой от ошибок незалогиненных пользователей"""
     try:
-        user_info = st.session_state.get("current_user", {})
-        username = user_info.get("username", "System")
-        role = user_info.get("role", "unknown")
+        user_info = st.session_state.get("current_user") or {}
         
+        req_username = username if username else user_info.get("username", "Гость")
+        req_role = role if role else user_info.get("role", "guest")
         req_ip = ip if ip else user_info.get("ip", get_client_ip())
         req_country = country if country else user_info.get("country", get_country_by_ip(req_ip))
         
@@ -126,8 +126,8 @@ def log_event(action: str, details: str, ip: str = None, country: str = None):
             vector=[0.0] * 384,
             payload={
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "username": username,
-                "role": role,
+                "username": req_username,
+                "role": req_role,
                 "action": action,
                 "details": details,
                 "ip": req_ip,
@@ -135,10 +135,11 @@ def log_event(action: str, details: str, ip: str = None, country: str = None):
             }
         )
         qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Ошибка сохранения лога: {e}")
 
 def get_audit_logs():
+    """Чтение логов из Qdrant с гарантированной подстановкой всех полей"""
     try:
         scroll_res, _ = qdrant.scroll(
             collection_name=LOGS_COLLECTION,
@@ -146,9 +147,21 @@ def get_audit_logs():
             with_payload=True,
             with_vectors=False
         )
-        logs = [pt.payload for pt in scroll_res]
+        logs = []
+        for pt in scroll_res:
+            p = pt.payload or {}
+            logs.append({
+                "timestamp": p.get("timestamp", ""),
+                "username": p.get("username", "Неизвестно"),
+                "role": p.get("role", "guest"),
+                "ip": p.get("ip", "127.0.0.1"),
+                "country": p.get("country", "Неизвестно"),
+                "action": p.get("action", "UNKNOWN"),
+                "details": p.get("details", "")
+            })
         return sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка получения логов: {e}")
         return []
 
 def get_db_files_summary():
@@ -233,7 +246,7 @@ if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
 # =====================================================================
-# 6. ЭКРАН ВХОДА В СИСТЕМУ (С ПРОВЕРКОЙ БЛОКИРОВОК И IP)
+# 6. ЭКРАН ВХОДА В СИСТЕМУ (ИСПРАВЛЕННОЕ ЛОГИРОВАНИЕ)
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -256,24 +269,59 @@ if not st.session_state.logged_in:
 
                 if not user_record:
                     st.error("Неверный логин или пароль")
-                    log_event("LOGIN_FAILED", f"Попытка входа с несуществующим логином '{clean_user}'", client_ip, client_country)
+                    log_event(
+                        action="LOGIN_FAILED", 
+                        details=f"Попытка входа с несуществующим логином '{clean_user}'", 
+                        ip=client_ip, 
+                        country=client_country,
+                        username=clean_user,
+                        role="guest"
+                    )
                 elif user_record.get("is_blocked", False):
                     st.error("❌ Ваш аккаунт заблокирован! Обратитесь к Собственнику.")
-                    log_event("LOGIN_BLOCKED", f"Попытка входа в заблокированный аккаунт '{clean_user}'", client_ip, client_country)
+                    log_event(
+                        action="LOGIN_BLOCKED", 
+                        details=f"Попытка входа в заблокированный аккаунт '{clean_user}'", 
+                        ip=client_ip, 
+                        country=client_country,
+                        username=clean_user,
+                        role=user_record.get("role", "guest")
+                    )
                 elif user_record.get("active_sessions", 0) >= user_record.get("max_connections", 1):
                     st.error(f"❌ Превышен лимит одновременных подключений ({user_record['max_connections']})!")
-                    log_event("LOGIN_LIMIT_EXCEEDED", f"Превышен лимит сессий для '{clean_user}'", client_ip, client_country)
+                    log_event(
+                        action="LOGIN_LIMIT_EXCEEDED", 
+                        details=f"Превышен лимит сессий для '{clean_user}'", 
+                        ip=client_ip, 
+                        country=client_country,
+                        username=clean_user,
+                        role=user_record.get("role", "guest")
+                    )
                 elif user_record["password"] != hash_password(pass_input):
                     user_record["failed_attempts"] = user_record.get("failed_attempts", 0) + 1
                     attempts = user_record["failed_attempts"]
                     
                     if attempts >= 3:
                         user_record["is_blocked"] = True
+                        log_event(
+                            action="AUTO_BLOCK", 
+                            details=f"Автоматическая блокировка аккаунта '{clean_user}' из-за 3 неверных попыток ввода пароля", 
+                            ip=client_ip, 
+                            country=client_country,
+                            username=clean_user,
+                            role=user_record.get("role", "guest")
+                        )
                         st.error("❌ Аккаунт заблокирован из-за 3 неверных попыток ввода пароля!")
-                        log_event("AUTO_BLOCK", f"Автоматическая блокировка '{clean_user}' после 3 ошибок", client_ip, client_country)
                     else:
+                        log_event(
+                            action="LOGIN_FAILED", 
+                            details=f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", 
+                            ip=client_ip, 
+                            country=client_country,
+                            username=clean_user,
+                            role=user_record.get("role", "guest")
+                        )
                         st.error(f"Неверный пароль! Осталось попыток: {3 - attempts}")
-                        log_event("LOGIN_FAILED", f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", client_ip, client_country)
                 else:
                     # Успешная авторизация
                     user_record["failed_attempts"] = 0
@@ -287,7 +335,14 @@ if not st.session_state.logged_in:
                         "ip": client_ip,
                         "country": client_country
                     }
-                    log_event("LOGIN_SUCCESS", f"Успешный вход ({user_record['name']})", client_ip, client_country)
+                    log_event(
+                        action="LOGIN_SUCCESS", 
+                        details=f"Успешный вход пользователя '{user_record['name']}'", 
+                        ip=client_ip, 
+                        country=client_country,
+                        username=clean_user,
+                        role=user_record["role"]
+                    )
                     st.success("Успешная авторизация!")
                     st.rerun()
 
@@ -657,21 +712,18 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
         
         sub_tab_logs, sub_tab_users = st.tabs(["📜 Полный Журнал Логов (GeoIP)", "👥 Управление Учётными Записями и Блокировками"])
         
-        # 1. ЖУРНАЛ АУДИТА С IP И СТРАНОЙ
         with sub_tab_logs:
-            st.write("Логи фиксируются в базе данных Qdrant Cloud:")
+            st.write("История всех попыток входа и действий сохраняется в Qdrant Cloud:")
             logs_data = get_audit_logs()
             if not logs_data:
                 st.info("Журнал аудита пуст.")
             else:
                 df_logs = pd.DataFrame(logs_data)
-                # Вывод таблицы с новыми полями IP и Country
                 st.dataframe(
                     df_logs[["timestamp", "username", "role", "ip", "country", "action", "details"]], 
                     use_container_width=True
                 )
 
-        # 2. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И БЛОКИРОВКАМИ
         with sub_tab_users:
             st.markdown("### 👥 Список зарегистрированных пользователей")
             
@@ -680,18 +732,15 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                     col_u1, col_u2, col_u3 = st.columns([2, 2, 2])
                     
                     with col_u1:
-                        # Статус блокировки
                         is_blk = u_info.get("is_blocked", False)
                         st.write(f"**Статус:** {'🔴 ЗАБЛОКИРОВАН' if is_blk else '🟢 Активен'}")
                         st.write(f"**Ошибок входа:** `{u_info.get('failed_attempts', 0)} / 3`")
                     
                     with col_u2:
-                        # Лимит и активные сессии
                         st.write(f"**Лимит сессий:** `{u_info.get('max_connections', 1)}`")
                         st.write(f"**Активных сессий:** `{u_info.get('active_sessions', 0)}`")
 
                     with col_u3:
-                        # Кнопка блокировки / разблокировки
                         if is_blk:
                             if st.button("🔓 Разблокировать", key=f"unblk_{login_key}"):
                                 u_info["is_blocked"] = False
@@ -700,21 +749,19 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                                 st.success("Пользователь разблокирован!")
                                 st.rerun()
                         else:
-                            if login_key != "owner": # Нельзя заблокировать самого собственника
+                            if login_key != "owner":
                                 if st.button("🔒 Заблокировать", key=f"blk_{login_key}", type="primary"):
                                     u_info["is_blocked"] = True
                                     log_event("BLOCK_USER", f"Собственник заблокировал пользователя '{login_key}'")
                                     st.success("Пользователь заблокирован!")
                                     st.rerun()
 
-                        # Сброс ошибок ввода
                         if u_info.get("failed_attempts", 0) > 0:
                             if st.button("🔄 Сбросить счетчик ошибок", key=f"rst_{login_key}"):
                                 u_info["failed_attempts"] = 0
-                                st.success("Ошибки сброшены!")
+                                st.success("Ошибки сбросованы!")
                                 st.rerun()
 
-                    # Настройка лимита одновременных подключений
                     new_max_conn = st.number_input(
                         "Максимум одновременных подключений:", 
                         min_value=1, 
