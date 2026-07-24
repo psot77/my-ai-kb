@@ -62,12 +62,11 @@ qdrant, groq_client, embedding_model = init_services()
 # =====================================================================
 # 3. ИНИЦИАЛИЗАЦИЯ СЕССИИ (Разделы и Проекты)
 # =====================================================================
-# Список доступных разделов знаний
 if "sections" not in st.session_state:
     st.session_state.sections = ["Общий раздел", "Продажи и CRM", "Регламенты", "Техническая часть"]
 
-# Словарь проектов: { НазваниеПроекта: [СписокРазделов] }
-if "projects" not in st.session_state:
+# Проверка: если projects отсутствует ИЛИ это старый список вместо словаря — пересоздаем
+if "projects" not in st.session_state or isinstance(st.session_state.projects, list):
     st.session_state.projects = {
         "Общий проект": ["Общий раздел"],
         "Отдел продаж": ["Продажи и CRM", "Общий раздел"],
@@ -81,13 +80,6 @@ if "messages" not in st.session_state:
 
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
-
-def export_chat_history():
-    text = f"# 📝 История диалога (Проект: {st.session_state.get('selected_project', 'Общий')})\n\n"
-    for msg in st.session_state.messages:
-        role = "👤 **Пользователь**" if msg["role"] == "user" else "🤖 **Ассистент**"
-        text += f"{role}:\n{msg['content']}\n\n---\n\n"
-    return text
 
 # =====================================================================
 # 4. БОКОВАЯ ПАНЕЛЬ (СОЗДАНИЕ И НАСТРОЙКА ПРОЕКТОВ)
