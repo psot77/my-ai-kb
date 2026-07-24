@@ -1,6 +1,8 @@
 import uuid
 import time
 import hashlib
+import json
+import urllib.request
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -23,14 +25,44 @@ QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud
 COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 
-st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🔐", layout="wide")
+st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
 
-# Хэширование паролей
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 # =====================================================================
-# 2. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ И БАЗ ДАННЫХ QDRANT
+# 2. ФУНКЦИИ ОПРЕДЕЛЕНИЯ IP И СТРАНЫ (GeoIP)
+# =====================================================================
+def get_client_ip() -> str:
+    """Извлечение IP-адреса пользователя из заголовков запроса Streamlit"""
+    try:
+        if hasattr(st, "context") and hasattr(st.context, "headers"):
+            headers = st.context.headers
+            if "X-Forwarded-For" in headers:
+                return headers["X-Forwarded-For"].split(",")[0].strip()
+            if "X-Real-Ip" in headers:
+                return headers["X-Real-Ip"]
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+def get_country_by_ip(ip: str) -> str:
+    """Определение страны по IP через lightweight GeoIP API"""
+    if ip in ["127.0.0.1", "localhost"] or ip.startswith("192.168.") or ip.startswith("10."):
+        return "Локальная сеть / Dev"
+    try:
+        url = f"http://ip-api.com/json/{ip}?fields=country,status"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=1.5) as response:
+            data = json.loads(response.read().decode())
+            if data.get("status") == "success":
+                return data.get("country", "Неизвестно")
+    except Exception:
+        pass
+    return "Неизвестно"
+
+# =====================================================================
+# 3. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
 # =====================================================================
 @st.cache_resource(max_entries=1)
 def init_services():
@@ -44,21 +76,18 @@ def init_services():
     
     collections = [c.name for c in qdrant.get_collections().collections]
     
-    # 1. Основная база знаний
     if COLLECTION_NAME not in collections:
         qdrant.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
     
-    # 2. База аудита и логов
     if LOGS_COLLECTION not in collections:
         qdrant.create_collection(
             collection_name=LOGS_COLLECTION,
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
 
-    # Индексы фильтрации
     for field in ["section", "project", "source_file"]:
         try:
             qdrant.create_payload_index(
@@ -80,24 +109,29 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 3. ФУНКЦИЯ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+# 4. ФУНКЦИЯ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
 # =====================================================================
-def log_event(action: str, details: str):
-    """Запись события аудита в облако Qdrant"""
+def log_event(action: str, details: str, ip: str = None, country: str = None):
+    """Запись события аудита с фиксированием IP и Страны в Qdrant"""
     try:
         user_info = st.session_state.get("current_user", {})
         username = user_info.get("username", "System")
         role = user_info.get("role", "unknown")
         
+        req_ip = ip if ip else user_info.get("ip", get_client_ip())
+        req_country = country if country else user_info.get("country", get_country_by_ip(req_ip))
+        
         log_point = PointStruct(
             id=uuid.uuid4().hex,
-            vector=[0.0] * 384,  # Вектор-заглушка
+            vector=[0.0] * 384,
             payload={
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "username": username,
                 "role": role,
                 "action": action,
-                "details": details
+                "details": details,
+                "ip": req_ip,
+                "country": req_country
             }
         )
         qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
@@ -105,7 +139,6 @@ def log_event(action: str, details: str):
         pass
 
 def get_audit_logs():
-    """Получение истории логов для Собственника"""
     try:
         scroll_res, _ = qdrant.scroll(
             collection_name=LOGS_COLLECTION,
@@ -145,13 +178,37 @@ def export_chat_history():
     return text
 
 # =====================================================================
-# 4. ИНИЦИАЛИЗАЦИЯ СЕССИИ И АВТОРИЗАЦИИ
+# 5. ИНИЦИАЛИЗАЦИЯ СЕССИИ И БД ПОЛЬЗОВАТЕЛЕЙ
 # =====================================================================
 if "users_db" not in st.session_state:
     st.session_state.users_db = {
-        "owner": {"password": hash_password("owner123"), "role": "owner", "name": "Собственник"},
-        "admin": {"password": hash_password("admin123"), "role": "admin", "name": "Администратор"},
-        "user":  {"password": hash_password("user123"),  "role": "user",  "name": "Менеджер"}
+        "owner": {
+            "password": hash_password("owner123"), 
+            "role": "owner", 
+            "name": "Собственник",
+            "failed_attempts": 0,
+            "is_blocked": False,
+            "max_connections": 5,
+            "active_sessions": 0
+        },
+        "admin": {
+            "password": hash_password("admin123"), 
+            "role": "admin", 
+            "name": "Администратор",
+            "failed_attempts": 0,
+            "is_blocked": False,
+            "max_connections": 3,
+            "active_sessions": 0
+        },
+        "user": {
+            "password": hash_password("user123"),  
+            "role": "user",  
+            "name": "Менеджер",
+            "failed_attempts": 0,
+            "is_blocked": False,
+            "max_connections": 1,
+            "active_sessions": 0
+        }
     }
 
 if "logged_in" not in st.session_state:
@@ -176,45 +233,75 @@ if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
 # =====================================================================
-# 5. ЭКРАН ВХОДА В СИСТЕМУ (LOGIN)
+# 6. ЭКРАН ВХОДА В СИСТЕМУ (С ПРОВЕРКОЙ БЛОКИРОВОК И IP)
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-        st.markdown("<h1 style='text-align: center;'>🔐 Вход в AI Базу Знаний</h1>", unsafe_allow_html=True)
-        st.caption("Авторизуйтесь для доступа к корпоративному пространству.")
+        st.markdown("<h1 style='text-align: center;'>🛡️ Вход в AI Базу Знаний</h1>", unsafe_allow_html=True)
+        st.caption("Корпоративная авторизация с контролем безопасности.")
         
+        client_ip = get_client_ip()
+        client_country = get_country_by_ip(client_ip)
+        st.info(f"🌐 Ваш IP: `{client_ip}` | Страна: **{client_country}**")
+
         with st.form("login_form"):
             user_input = st.text_input("Логин:")
             pass_input = st.text_input("Пароль:", type="password")
             submit_login = st.form_submit_button("Войти в систему", use_container_width=True)
 
             if submit_login:
-                user_record = st.session_state.users_db.get(user_input.strip().lower())
-                if user_record and user_record["password"] == hash_password(pass_input):
+                clean_user = user_input.strip().lower()
+                user_record = st.session_state.users_db.get(clean_user)
+
+                if not user_record:
+                    st.error("Неверный логин или пароль")
+                    log_event("LOGIN_FAILED", f"Попытка входа с несуществующим логином '{clean_user}'", client_ip, client_country)
+                elif user_record.get("is_blocked", False):
+                    st.error("❌ Ваш аккаунт заблокирован! Обратитесь к Собственнику.")
+                    log_event("LOGIN_BLOCKED", f"Попытка входа в заблокированный аккаунт '{clean_user}'", client_ip, client_country)
+                elif user_record.get("active_sessions", 0) >= user_record.get("max_connections", 1):
+                    st.error(f"❌ Превышен лимит одновременных подключений ({user_record['max_connections']})!")
+                    log_event("LOGIN_LIMIT_EXCEEDED", f"Превышен лимит сессий для '{clean_user}'", client_ip, client_country)
+                elif user_record["password"] != hash_password(pass_input):
+                    user_record["failed_attempts"] = user_record.get("failed_attempts", 0) + 1
+                    attempts = user_record["failed_attempts"]
+                    
+                    if attempts >= 3:
+                        user_record["is_blocked"] = True
+                        st.error("❌ Аккаунт заблокирован из-за 3 неверных попыток ввода пароля!")
+                        log_event("AUTO_BLOCK", f"Автоматическая блокировка '{clean_user}' после 3 ошибок", client_ip, client_country)
+                    else:
+                        st.error(f"Неверный пароль! Осталось попыток: {3 - attempts}")
+                        log_event("LOGIN_FAILED", f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", client_ip, client_country)
+                else:
+                    # Успешная авторизация
+                    user_record["failed_attempts"] = 0
+                    user_record["active_sessions"] = user_record.get("active_sessions", 0) + 1
+                    
                     st.session_state.logged_in = True
                     st.session_state.current_user = {
-                        "username": user_input.strip().lower(),
+                        "username": clean_user,
                         "role": user_record["role"],
-                        "name": user_record["name"]
+                        "name": user_record["name"],
+                        "ip": client_ip,
+                        "country": client_country
                     }
-                    log_event("LOGIN", f"Успешный вход пользователя {user_record['name']}")
+                    log_event("LOGIN_SUCCESS", f"Успешный вход ({user_record['name']})", client_ip, client_country)
                     st.success("Успешная авторизация!")
                     st.rerun()
-                else:
-                    st.error("Неверный логин или пароль")
 
         st.divider()
-        with st.expander("🔑 Демо-учётные записи для проверки"):
+        with st.expander("🔑 Демо-учётные записи"):
             st.markdown("""
-            * **👑 Собственник:** Логин `owner` | Пароль `owner123` *(Полный доступ)*
-            * **🛠️ Администратор:** Логин `admin` | Пароль `admin123` *(Управление документами и проектами)*
-            * **👤 Пользователь:** Логин `user` | Пароль `user123` *(Только чат и поиск)*
+            * **👑 Собственник:** `owner` | `owner123` *(Max 5 подключений)*
+            * **🛠️ Администратор:** `admin` | `admin123` *(Max 3 подключения)*
+            * **👤 Пользователь:** `user` | `user123` *(Max 1 подключение)*
             """)
     st.stop()
 
 # =====================================================================
-# 6. БОКОВАЯ ПАНЕЛЬ И РАЗГРАНИЧЕНИЕ ПРАВ
+# 7. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И НАСТРОЙКАМИ
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -227,9 +314,14 @@ role_badges = {
 
 with st.sidebar:
     st.markdown(f"### {user_data['name']}")
-    st.caption(f"Роль в системе: **{role_badges.get(user_role, user_role)}**")
+    st.caption(f"Роль: **{role_badges.get(user_role, user_role)}**")
+    st.caption(f"IP: `{user_data.get('ip', '127.0.0.1')}` ({user_data.get('country', 'Неизвестно')})")
     
     if st.button("🚪 Выйти из аккаунта", use_container_width=True):
+        u_rec = st.session_state.users_db.get(user_data["username"])
+        if u_rec and u_rec.get("active_sessions", 0) > 0:
+            u_rec["active_sessions"] -= 1
+            
         log_event("LOGOUT", "Выход из системы")
         st.session_state.logged_in = False
         st.session_state.current_user = None
@@ -245,7 +337,6 @@ with st.sidebar:
     active_sections = st.session_state.projects.get(selected_project, [])
     st.caption(f"Разделы: **{', '.join(active_sections) if active_sections else 'Нет'}**")
 
-    # Только Admin и Owner могут создавать/редактировать проекты
     if user_role in ["admin", "owner"]:
         with st.expander("➕ Создать проект"):
             new_proj_name = st.text_input("Имя проекта:")
@@ -257,7 +348,7 @@ with st.sidebar:
             if st.button("Сохранить проект", use_container_width=True):
                 if new_proj_name and new_proj_name not in st.session_state.projects:
                     st.session_state.projects[new_proj_name] = chosen_sections
-                    log_event("CREATE_PROJECT", f"Создан проект '{new_proj_name}' со списками разделов: {chosen_sections}")
+                    log_event("CREATE_PROJECT", f"Создан проект '{new_proj_name}': {chosen_sections}")
                     st.success(f"Проект '{new_proj_name}' создан!")
                     st.rerun()
 
@@ -275,7 +366,6 @@ with st.sidebar:
 
     st.divider()
     
-    # Статистика
     try:
         if active_sections:
             project_filter = Filter(must=[FieldCondition(key="section", match=MatchAny(any=active_sections))])
@@ -308,24 +398,23 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 7. ОСНОВНОЙ ИНТЕРФЕЙС И ДИНАМИЧЕСКИЕ ВКЛАДКИ
+# 8. ОСНОВНОЙ ИНТЕРФЕЙС
 # =====================================================================
 st.title(f"🤖 AI Ассистент — [{selected_project}]")
 
-# Динамическое формирование доступных вкладок
 tab_titles = ["💬 Чат по проекту"]
 
 if user_role in ["admin", "owner"]:
     tab_titles.extend(["📁 Загрузка документов", "🗂️ Управление файлами", "📈 Аналитика"])
 
 if user_role == "owner":
-    tab_titles.append("📋 Журнал логов & Управление")
+    tab_titles.append("📋 Журнал логов & Безопасность")
 
 tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ (Доступна ВСЕМ)
+# ВКЛАДКА 1: ЧАТ
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg in st.session_state.messages:
@@ -400,7 +489,6 @@ with tab_dict["💬 Чат по проекту"]:
                     answer = res.choices[0].message.content
                     st.write(answer)
 
-                    # Логирование запроса
                     log_event("QUERY", f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' | Токены: {res.usage.total_tokens}")
 
                     st.session_state.metrics_history.append({
@@ -430,7 +518,7 @@ with tab_dict["💬 Чат по проекту"]:
                     st.session_state.messages.append({"role": "assistant", "content": answer})
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ (Admin / Owner)
+# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ
 # ---------------------------------------------------------------------
 if "📁 Загрузка документов" in tab_dict:
     with tab_dict["📁 Загрузка документов"]:
@@ -444,7 +532,7 @@ if "📁 Загрузка документов" in tab_dict:
             if st.button("Добавить раздел", use_container_width=True):
                 if new_sec_input and new_sec_input not in st.session_state.sections:
                     st.session_state.sections.append(new_sec_input)
-                    log_event("CREATE_SECTION", f"Создан новый раздел '{new_sec_input}'")
+                    log_event("CREATE_SECTION", f"Создан раздел '{new_sec_input}'")
                     st.success(f"Раздел '{new_sec_input}' создан!")
                     st.rerun()
 
@@ -481,11 +569,11 @@ if "📁 Загрузка документов" in tab_dict:
 
                 qdrant.upsert(collection_name=COLLECTION_NAME, points=all_points)
                 log_event("UPLOAD_FILES", f"Загружено {len(uploaded_files)} файлов в раздел '{target_section}'")
-                st.success("Документы успешно векторизованы!")
+                st.success("Документы векторизованы!")
                 st.rerun()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 3: УПРАВЛЕНИЕ ФАЙЛАМИ (Admin / Owner)
+# ВКЛАДКА 3: УПРАВЛЕНИЕ ФАЙЛАМИ
 # ---------------------------------------------------------------------
 if "🗂️ Управление файлами" in tab_dict:
     with tab_dict["🗂️ Управление файлами"]:
@@ -516,7 +604,7 @@ if "🗂️ Управление файлами" in tab_dict:
                                     p_ids = [p.id for p in pts]
                                     if p_ids:
                                         qdrant.set_payload(collection_name=COLLECTION_NAME, payload={"section": dest_s}, points=p_ids)
-                                        log_event("MOVE_FILE", f"Файл '{fname}' перемещен из '{sec_name}' в '{dest_s}'")
+                                        log_event("MOVE_FILE", f"Файл '{fname}' из '{sec_name}' в '{dest_s}'")
                                         st.success("Перемещено!")
                                         st.rerun()
 
@@ -533,19 +621,19 @@ if "🗂️ Управление файлами" in tab_dict:
                                 p_ids = [p.id for p in pts]
                                 if p_ids:
                                     qdrant.delete(collection_name=COLLECTION_NAME, points_selector=p_ids)
-                                    log_event("DELETE_FILE", f"Файл '{fname}' удален из раздела '{sec_name}'")
+                                    log_event("DELETE_FILE", f"Файл '{fname}' удален из '{sec_name}'")
                                     st.success("Удалено!")
                                     st.rerun()
                         st.divider()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 4: АНАЛИТИКА (Admin / Owner)
+# ВКЛАДКА 4: АНАЛИТИКА
 # ---------------------------------------------------------------------
 if "📈 Аналитика" in tab_dict:
     with tab_dict["📈 Аналитика"]:
-        st.subheader("📈 Статистика сессии")
+        st.subheader("📈 Статистика использования")
         if not st.session_state.metrics_history:
-            st.info("Нет данных для анализа.")
+            st.info("Нет данных за текущую сессию.")
         else:
             df_m = pd.DataFrame(st.session_state.metrics_history)
             m1, m2, m3, m4 = st.columns(4)
@@ -561,47 +649,106 @@ if "📈 Аналитика" in tab_dict:
             st.line_chart(df_m.set_index("Запрос №")[["Время ответа (сек)"]])
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 5: ЛОГИ И ПОЛЬЗОВАТЕЛИ (Только Owner)
+# ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ & БЕЗОПАСНОСТЬ (Только Owner)
 # ---------------------------------------------------------------------
-if "📋 Журнал логов & Управление" in tab_dict:
-    with tab_dict["📋 Журнал логов & Управление"]:
-        st.subheader("👑 Панель управления Собственника")
+if "📋 Журнал логов & Безопасность" in tab_dict:
+    with tab_dict["📋 Журнал логов & Безопасность"]:
+        st.subheader("👑 Безопасность и Аудит (Панель Собственника)")
         
-        tab_sub_logs, tab_sub_users = st.tabs(["📜 Журнал аудита (Audit Trail)", "👥 Пользователи и Доступ"])
+        sub_tab_logs, sub_tab_users = st.tabs(["📜 Полный Журнал Логов (GeoIP)", "👥 Управление Учётными Записями и Блокировками"])
         
-        with tab_sub_logs:
-            st.write("История всех действий пользователей сохраняется в Qdrant Cloud.")
+        # 1. ЖУРНАЛ АУДИТА С IP И СТРАНОЙ
+        with sub_tab_logs:
+            st.write("Логи фиксируются в базе данных Qdrant Cloud:")
             logs_data = get_audit_logs()
             if not logs_data:
-                st.info("Журнал логов пуст.")
+                st.info("Журнал аудита пуст.")
             else:
                 df_logs = pd.DataFrame(logs_data)
+                # Вывод таблицы с новыми полями IP и Country
                 st.dataframe(
-                    df_logs[["timestamp", "username", "role", "action", "details"]], 
+                    df_logs[["timestamp", "username", "role", "ip", "country", "action", "details"]], 
                     use_container_width=True
                 )
 
-        with tab_sub_users:
+        # 2. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ И БЛОКИРОВКАМИ
+        with sub_tab_users:
+            st.markdown("### 👥 Список зарегистрированных пользователей")
+            
+            for login_key, u_info in st.session_state.users_db.items():
+                with st.expander(f"👤 **{u_info['name']}** (`{login_key}`) — Роль: `{role_badges.get(u_info['role'], u_info['role'])}`", expanded=True):
+                    col_u1, col_u2, col_u3 = st.columns([2, 2, 2])
+                    
+                    with col_u1:
+                        # Статус блокировки
+                        is_blk = u_info.get("is_blocked", False)
+                        st.write(f"**Статус:** {'🔴 ЗАБЛОКИРОВАН' if is_blk else '🟢 Активен'}")
+                        st.write(f"**Ошибок входа:** `{u_info.get('failed_attempts', 0)} / 3`")
+                    
+                    with col_u2:
+                        # Лимит и активные сессии
+                        st.write(f"**Лимит сессий:** `{u_info.get('max_connections', 1)}`")
+                        st.write(f"**Активных сессий:** `{u_info.get('active_sessions', 0)}`")
+
+                    with col_u3:
+                        # Кнопка блокировки / разблокировки
+                        if is_blk:
+                            if st.button("🔓 Разблокировать", key=f"unblk_{login_key}"):
+                                u_info["is_blocked"] = False
+                                u_info["failed_attempts"] = 0
+                                log_event("UNBLOCK_USER", f"Собственник разблокировал пользователя '{login_key}'")
+                                st.success("Пользователь разблокирован!")
+                                st.rerun()
+                        else:
+                            if login_key != "owner": # Нельзя заблокировать самого собственника
+                                if st.button("🔒 Заблокировать", key=f"blk_{login_key}", type="primary"):
+                                    u_info["is_blocked"] = True
+                                    log_event("BLOCK_USER", f"Собственник заблокировал пользователя '{login_key}'")
+                                    st.success("Пользователь заблокирован!")
+                                    st.rerun()
+
+                        # Сброс ошибок ввода
+                        if u_info.get("failed_attempts", 0) > 0:
+                            if st.button("🔄 Сбросить счетчик ошибок", key=f"rst_{login_key}"):
+                                u_info["failed_attempts"] = 0
+                                st.success("Ошибки сброшены!")
+                                st.rerun()
+
+                    # Настройка лимита одновременных подключений
+                    new_max_conn = st.number_input(
+                        "Максимум одновременных подключений:", 
+                        min_value=1, 
+                        max_value=20, 
+                        value=u_info.get("max_connections", 1),
+                        key=f"mc_{login_key}"
+                    )
+                    if new_max_conn != u_info.get("max_connections", 1):
+                        u_info["max_connections"] = new_max_conn
+                        log_event("UPDATE_CONN_LIMIT", f"Лимит сессий для '{login_key}' изменен на {new_max_conn}")
+                        st.success("Лимит обновлен!")
+                        st.rerun()
+
+            st.divider()
             st.markdown("### ➕ Добавить нового пользователя")
             with st.form("add_user_form"):
                 u_login = st.text_input("Логин:")
                 u_name = st.text_input("ФИО / Отображаемое имя:")
                 u_pass = st.text_input("Пароль:", type="password")
                 u_role = st.selectbox("Роль:", ["user", "admin", "owner"])
+                u_max_c = st.number_input("Лимит подключений:", min_value=1, max_value=10, value=1)
                 
-                if st.form_submit_button("Создать пользователя", use_container_width=True):
+                if st.form_submit_button("Создать аккаунт", use_container_width=True):
                     login_clean = u_login.strip().lower()
                     if login_clean and u_pass:
                         st.session_state.users_db[login_clean] = {
                             "password": hash_password(u_pass),
                             "role": u_role,
-                            "name": u_name if u_name else login_clean
+                            "name": u_name if u_name else login_clean,
+                            "failed_attempts": 0,
+                            "is_blocked": False,
+                            "max_connections": u_max_c,
+                            "active_sessions": 0
                         }
-                        log_event("CREATE_USER", f"Создан пользователь '{login_clean}' с ролью '{u_role}'")
-                        st.success(f"Пользователь '{login_clean}' добавлен!")
+                        log_event("CREATE_USER", f"Создан аккаунт '{login_clean}' (Роль: {u_role}, Лимит сессий: {u_max_c})")
+                        st.success(f"Аккаунт '{login_clean}' успешно создан!")
                         st.rerun()
-
-            st.divider()
-            st.markdown("### 📋 Зарегистрированные аккаунты")
-            for u_log, u_info in st.session_state.users_db.items():
-                st.write(f"• **{u_info['name']}** (`{u_log}`) — Роль: `{role_badges.get(u_info['role'], u_info['role'])}`")
