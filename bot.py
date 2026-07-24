@@ -2,9 +2,10 @@ import os
 import io
 import asyncio
 import logging
+import json
+import urllib.request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from groq import Groq
 
@@ -12,7 +13,7 @@ from groq import Groq
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ СКРИПТА BOT.PY ===")
+logger.info("=== СТАРТ ЛЕГКОГО BOT.PY ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -21,24 +22,22 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Глобальные переменные ленивой инициализации
-_qdrant = None
-_groq_client = None
-_embedding_model = None
+# Облачные клиенты
+qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-def get_services():
-    """Загрузка нейросети и клиентов по требованию (экономия RAM на старте)"""
-    global _qdrant, _groq_client, _embedding_model
-    if _qdrant is None:
-        logger.info("Инициализация Qdrant, Groq и FastEmbed...")
-        _qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
-        _groq_client = Groq(api_key=GROQ_API_KEY)
-        _embedding_model = TextEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            threads=1
-        )
-        logger.info("Сервисы успешно загружены!")
-    return _qdrant, _groq_client, _embedding_model
+def get_cloud_embedding(text: str) -> list:
+    """Получение векторного представления через HuggingFace API (потребляет 0 МБ RAM сервера)"""
+    url = "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    headers = {"Content-Type": "application/json"}
+    payload = json.dumps({"inputs": text, "options": {"wait_for_model": True}}).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=payload, headers=headers)
+    with urllib.request.urlopen(req, timeout=12) as response:
+        res = json.loads(response.read().decode("utf-8"))
+        if isinstance(res, list):
+            return res if isinstance(res[0], float) else res[0]
+        raise Exception(f"Неожиданный ответ HF API: {res}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
@@ -49,10 +48,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def search_rag_answer(query_text: str) -> str:
     try:
-        qdrant_client, groq_cl, embed_mod = get_services()
-        query_vector = list(embed_mod.embed([query_text]))[0].tolist()
+        # Получаем вектор текста через облако (без нагрузки на память)
+        query_vector = get_cloud_embedding(query_text)
         
-        response = qdrant_client.query_points(
+        response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
             limit=3
@@ -80,7 +79,7 @@ def search_rag_answer(query_text: str) -> str:
 
 --- ОТВЕТ ---"""
 
-        res = groq_cl.chat.completions.create(
+        res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": llm_prompt}],
             temperature=0.2
@@ -108,15 +107,13 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info("Обработка голосового сообщения...")
         await update.message.reply_chat_action("typing")
         
-        _, groq_cl, _ = get_services()
-        
         voice_file = await context.bot.get_file(update.message.voice.file_id)
         voice_bytes = await voice_file.download_as_bytearray()
         
         audio_io = io.BytesIO(voice_bytes)
         audio_io.name = "voice.ogg"
 
-        transcription = groq_cl.audio.transcriptions.create(
+        transcription = groq_client.audio.transcriptions.create(
             file=audio_io,
             model="whisper-large-v3-turbo",
             prompt="Запрос на русском языке по базе знаний",
@@ -145,5 +142,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Telegram-бот успешно запущен и слушает сообщения!")
+    logger.info("🤖 УСПЕХ: Легкий Telegram-бот успешно запущен!")
     app.run_polling()
