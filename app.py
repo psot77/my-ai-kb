@@ -483,7 +483,7 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД (GROQ WHISPER API)
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД (ИСПРАВЛЕННЫЙ РОБУСТНЫЙ ПЛЕЕР)
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
@@ -527,31 +527,36 @@ with tab_dict["💬 Чат по проекту"]:
     
     prompt = None
     
-    # Обработка записанного голоса через Groq Whisper
+    # Защищенная обработка записанной аудиозаписи
     if audio_value is not None:
-        if st.session_state.get("last_processed_audio") != audio_value:
+        audio_bytes = audio_value.read()
+        audio_value.seek(0) # Важно: возвращаем каретку в начало!
+        
+        audio_hash = hashlib.md5(audio_bytes).hexdigest()
+        
+        if st.session_state.get("last_processed_audio_hash") != audio_hash:
             with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
                 try:
-                    audio_bytes = audio_value.read()
+                    audio_file = io.BytesIO(audio_bytes)
+                    audio_file.name = "audio.wav"
+                    
                     transcription = groq_client.audio.transcriptions.create(
-                        file=("audio.wav", audio_bytes),
+                        file=audio_file,
                         model="whisper-large-v3-turbo",
                         prompt="Запрос на русском языке по базе знаний",
                         response_format="text"
                     )
                     prompt = str(transcription).strip()
-                    st.session_state["last_processed_audio"] = audio_value
+                    st.session_state["last_processed_audio_hash"] = audio_hash
                     log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
                     st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
                 except Exception as e:
                     st.error(f"Ошибка распознавания голоса: {e}")
 
-    # Поле текстового ввода
     text_prompt = st.chat_input(f"Или введите вопрос по проекту '{selected_project}'...")
     if text_prompt:
         prompt = text_prompt
 
-    # Единый блок обработки вопроса (текст или голос)
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
@@ -635,7 +640,7 @@ with tab_dict["💬 Чат по проекту"]:
         st.rerun()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ (PDF, DOCX, TXT, MD)
+# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ
 # ---------------------------------------------------------------------
 if "📁 Загрузка документов" in tab_dict:
     with tab_dict["📁 Загрузка документов"]:
@@ -676,7 +681,6 @@ if "📁 Загрузка документов" in tab_dict:
                         st.warning(f"Файл '{fname}' пуст или из него не удалось извлечь текст.")
                         continue
 
-                    # Выбор стратегии нарезки в зависимости от формата
                     if fname.lower().endswith(".md"):
                         chunks_md = markdown_splitter.split_text(extracted_text)
                         texts = [c.page_content for c in chunks_md] if chunks_md else [extracted_text]
