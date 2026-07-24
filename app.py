@@ -27,25 +27,43 @@ COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
+import streamlit.components.v1 as components
+
 # =====================================================================
-# НАДЕЖНЫЙ ПЕРЕХВАТ Ctrl+C / Cmd+C (Прямая инъекция в DOM главного окна)
+# БЛОКИРОВКА МОДАЛКИ "CLEAR CACHES" ПРИ Ctrl+C / Cmd+C (EN + RU раскладки)
 # =====================================================================
-st.markdown(
+components.html(
     """
-    <img src="x" onerror="
-        if (!window.copyFixApplied) {
-            window.copyFixApplied = true;
-            const preventCacheHotkey = function(e) {
-                if ((e.key === 'c' || e.key === 'C' || e.keyCode === 67) && (e.ctrlKey || e.metaKey)) {
-                    e.stopImmediatePropagation();
+    <script>
+    (function() {
+        try {
+            const parentWin = window.parent;
+            const parentDoc = window.parent.document;
+
+            function preventStreamlitCacheHotkey(e) {
+                // Проверяем, зажат ли Ctrl (Windows/Linux) или Cmd (macOS)
+                if (e.ctrlKey || e.metaKey) {
+                    const key = e.key ? e.key.toLowerCase() : '';
+                    // Проверяем латинскую 'c', кириллическую 'с' и физический код клавиши KeyC
+                    if (key === 'c' || key === 'с' || e.code === 'KeyC' || e.keyCode === 67) {
+                        // stopImmediatePropagation полностью глушит обработчик Streamlit,
+                        // но оставляет стандартное копирование текста браузером
+                        e.stopImmediatePropagation();
+                    }
                 }
-            };
-            window.addEventListener('keydown', preventCacheHotkey, true);
-            document.addEventListener('keydown', preventCacheHotkey, true);
+            }
+
+            // Перехватываем событие ДО того, как его услышит Streamlit
+            parentDoc.addEventListener('keydown', preventStreamlitCacheHotkey, true);
+            parentWin.addEventListener('keydown', preventStreamlitCacheHotkey, true);
+        } catch (err) {
+            console.error('Copy fix error:', err);
         }
-    " style="display:none;"/>
+    })();
+    </script>
     """,
-    unsafe_allow_html=True
+    height=0,
+    width=0,
 )
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
