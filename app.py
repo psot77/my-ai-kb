@@ -4,6 +4,7 @@ import hashlib
 import json
 import urllib.request
 import io
+import os
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -20,6 +21,13 @@ from groq import Groq
 from pypdf import PdfReader
 from docx import Document
 
+# Генерация PDF
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
 # =====================================================================
 # 1. НАСТРОЙКИ КЛЮЧЕЙ, СТРАНИЦЫ И ТАЙМ-АУТА
 # =====================================================================
@@ -30,7 +38,6 @@ QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud
 COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 
-# Время неактивности до автовыхода (15 минут)
 SESSION_TIMEOUT_MINUTES = 15
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
@@ -52,7 +59,49 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 # =====================================================================
-# 2. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ
+# 2. ФУНКЦИИ ГЕНЕРАЦИИ PDF-ОТЧЕТОВ
+# =====================================================================
+def generate_pdf_report(project_name: str, messages: list) -> bytes:
+    """Формирование PDF отчета по истории диалога с поддержкой кириллицы"""
+    font_path = "DejaVuSans.ttf"
+    if not os.path.exists(font_path):
+        try:
+            urllib.request.urlretrieve(
+                "https://cdn.jsdelivr.net/font-dejavu/2.37/ttf/DejaVuSans.ttf", 
+                font_path
+            )
+        except Exception:
+            pass
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+
+    if os.path.exists(font_path):
+        pdfmetrics.registerFont(TTFont('DejaVu', font_path))
+        font_name = 'DejaVu'
+    else:
+        font_name = 'Helvetica'
+
+    style_title = ParagraphStyle('DocTitle', fontName=font_name, fontSize=16, leading=20, spaceAfter=12)
+    style_meta = ParagraphStyle('DocMeta', fontName=font_name, fontSize=9, leading=12, textColor='#555555', spaceAfter=18)
+    style_msg = ParagraphStyle('DocMsg', fontName=font_name, fontSize=10, leading=14, spaceAfter=10)
+
+    story = []
+    story.append(Paragraph(f"<b>Отчет по диалогу: {project_name}</b>", style_title))
+    story.append(Paragraph(f"Дата генерации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Сгенерировано системой Enterprise AI", style_meta))
+
+    for msg in messages:
+        role_label = "👤 <b>Пользователь</b>" if msg["role"] == "user" else "🤖 <b>AI Ассистент</b>"
+        clean_content = msg["content"].replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+        story.append(Paragraph(f"{role_label}:<br/>{clean_content}", style_msg))
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+# =====================================================================
+# 3. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ
 # =====================================================================
 def extract_text_from_file(uploaded_file) -> str:
     fname = uploaded_file.name.lower()
@@ -93,7 +142,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
     return chunks if chunks else [text]
 
 # =====================================================================
-# 3. GeoIP ФУНКЦИИ (IP, СТРАНА И КООРДИНАТЫ ДЛЯ КАРТЫ)
+# 4. GeoIP ФУНКЦИИ (IP, СТРАНА И КООРДИНАТЫ ДЛЯ КАРТЫ)
 # =====================================================================
 def get_client_ip() -> str:
     try:
@@ -108,10 +157,9 @@ def get_client_ip() -> str:
     return "127.0.0.1"
 
 def get_geoip_details(ip: str) -> dict:
-    """Получение страны, города, широты и долготы по IP"""
     default_res = {"country": "Неизвестно", "city": "Неизвестно", "lat": None, "lon": None}
     if ip in ["127.0.0.1", "localhost"] or ip.startswith("192.168.") or ip.startswith("10."):
-        return {"country": "Локальная сеть", "city": "Dev", "lat": 50.4501, "lon": 30.5234} # Координаты по умолчанию
+        return {"country": "Локальная сеть", "city": "Dev", "lat": 50.4501, "lon": 30.5234}
     try:
         url = f"http://ip-api.com/json/{ip}?fields=country,city,lat,lon,status"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -129,7 +177,7 @@ def get_geoip_details(ip: str) -> dict:
     return default_res
 
 # =====================================================================
-# 4. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
+# 5. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
 # =====================================================================
 @st.cache_resource(max_entries=1)
 def init_services():
@@ -176,7 +224,7 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 5. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+# 6. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
 # =====================================================================
 def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
@@ -262,7 +310,7 @@ def export_chat_history():
     return text
 
 # =====================================================================
-# 6. ИНИЦИАЛИЗАЦИЯ СЕССИИ И БД ПОЛЬЗОВАТЕЛЕЙ
+# 7. ИНИЦИАЛИЗАЦИЯ СЕССИИ И БД ПОЛЬЗОВАТЕЛЕЙ
 # =====================================================================
 if "users_db" not in st.session_state:
     st.session_state.users_db = {
@@ -320,13 +368,12 @@ if "voice_key_counter" not in st.session_state:
     st.session_state.voice_key_counter = 0
 
 # =====================================================================
-# 7. АВТОМАТИЧЕСКИЙ ТАЙМ-АУТ СЕССИИ ПРИ НЕАКТИВНОСТИ
+# 8. АВТОМАТИЧЕСКИЙ ТАЙМ-АУТ СЕССИИ ПРИ НЕАКТИВНОСТИ
 # =====================================================================
 if st.session_state.logged_in:
     current_time = time.time()
     last_act = st.session_state.get("last_activity_time", current_time)
     
-    # Если прошло больше SESSION_TIMEOUT_MINUTES
     if (current_time - last_act) > (SESSION_TIMEOUT_MINUTES * 60):
         c_user = st.session_state.get("current_user", {})
         u_rec = st.session_state.users_db.get(c_user.get("username", ""))
@@ -339,11 +386,10 @@ if st.session_state.logged_in:
         st.session_state.timeout_message = f"⏳ Ваша сессия завершена автоматически из-за отсутствия активности более {SESSION_TIMEOUT_MINUTES} минут."
         st.rerun()
     else:
-        # Обновляем отметку времени последней активности
         st.session_state.last_activity_time = current_time
 
 # =====================================================================
-# 8. ЭКРАН ВХОДА В СИСТЕМУ
+# 9. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -351,7 +397,6 @@ if not st.session_state.logged_in:
         st.markdown("<h1 style='text-align: center;'>🛡️ Вход в AI Базу Знаний</h1>", unsafe_allow_html=True)
         st.caption("Корпоративная авторизация с контролем безопасности.")
         
-        # Если произошел тайм-аут
         if st.session_state.get("timeout_message"):
             st.warning(st.session_state["timeout_message"])
             st.session_state["timeout_message"] = None
@@ -417,7 +462,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 9. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И НАСТРОЙКАМИ
+# 10. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И ЭКСПОРТОМ (MD + PDF)
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -498,12 +543,23 @@ with st.sidebar:
         pass
 
     st.divider()
+    st.markdown("### 📥 Экспорт истории")
     
     st.download_button(
         label="📥 Скачать историю (.md)",
         data=export_chat_history(),
         file_name=f"chat_{selected_project}.md",
         mime="text/markdown",
+        use_container_width=True
+    )
+
+    # Генератор PDF-файла
+    pdf_bytes = generate_pdf_report(selected_project, st.session_state.get("messages", []))
+    st.download_button(
+        label="📄 Скачать отчет (.pdf)",
+        data=pdf_bytes,
+        file_name=f"report_{selected_project}.pdf",
+        mime="application/pdf",
         use_container_width=True
     )
     
@@ -515,7 +571,7 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 10. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
+# 11. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
 # =====================================================================
 st.title(f"🤖 AI Ассистент — [{selected_project}]")
 
@@ -850,7 +906,6 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
         logs_data = get_audit_logs()
         df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
 
-        # 1. ЖУРНАЛ ЛОГОВ
         with sub_tab_logs:
             st.write("История всех действий фиксируется в Qdrant Cloud:")
             if df_logs_all.empty:
@@ -861,13 +916,11 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                     use_container_width=True
                 )
 
-        # 2. КАРТА ВХОДОВ (GeoIP)
         with sub_tab_map:
             st.markdown("### 🗺️ Интерактивная карта геопозиций входов")
             st.caption("Отображение точек подключения пользователей на основе данных GeoIP:")
             
             if not df_logs_all.empty and "lat" in df_logs_all.columns and "lon" in df_logs_all.columns:
-                # Фильтруем записи с корректными координатами
                 df_map_data = df_logs_all.dropna(subset=["lat", "lon"]).copy()
                 df_map_data["lat"] = pd.to_numeric(df_map_data["lat"], errors="coerce")
                 df_map_data["lon"] = pd.to_numeric(df_map_data["lon"], errors="coerce")
@@ -884,7 +937,6 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
             else:
                 st.info("Нет данных для отображения карты.")
 
-        # 3. ПРОБЕЛЫ В ЗНАНИЯХ
         with sub_tab_gaps:
             st.markdown("### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)")
             st.caption("Автоматически зафиксированные вопросы, где релевантность базы знаний была < 35%:")
@@ -927,7 +979,6 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                         use_container_width=True
                     )
 
-        # 4. УПРАВЛЕНИЕ АККАУНТАМИ
         with sub_tab_users:
             st.markdown("### 👥 Список зарегистрированных пользователей")
             
