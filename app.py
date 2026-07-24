@@ -14,110 +14,7 @@ from qdrant_client.models import (
 )
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from groq import Groq
-# ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ (👍/👎 + KNOWLEDGE GAP)
-# ---------------------------------------------------------------------
-with tab_dict["💬 Чат по проекту"]:
-    # Отрисовка всех сообщений из истории
-    for msg_idx, msg in enumerate(st.session_state.messages):
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
-            
-            # Кнопки 👍 / 👎 выводим прямо внутри диалогового бабла ассистента
-            if msg["role"] == "assistant" and msg_idx > 0:
-                c_fb1, c_fb2, _ = st.columns([1, 1, 10])
-                with c_fb1:
-                    if st.button("👍", key=f"pos_{msg_idx}"):
-                        log_event("FEEDBACK_POSITIVE", f"Положительный отклик на ответ №{msg_idx}")
-                        st.toast("Спасибо за оценку! 👍", icon="✅")
-                with c_fb2:
-                    if st.button("👎", key=f"neg_{msg_idx}"):
-                        log_event("FEEDBACK_NEGATIVE", f"Замечание по ответу №{msg_idx}")
-                        st.toast("Спасибо! Отклик передан администраторам 📝", icon="📝")
 
-    # Поле ввода вопроса
-    if prompt := st.chat_input(f"Задайте вопрос по проекту '{selected_project}'..."):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
-        with st.spinner("Поиск ответа в базе знаний..."):
-            t_start = time.perf_counter()
-            query_vector = list(embedding_model.embed([prompt]))[0].tolist()
-
-            t_qdrant_start = time.perf_counter()
-            search_results = []
-            
-            if active_sections:
-                search_filter = Filter(
-                    must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
-                )
-                try:
-                    response = qdrant.query_points(
-                        collection_name=COLLECTION_NAME,
-                        query=query_vector,
-                        query_filter=search_filter,
-                        limit=3
-                    )
-                    search_results = response.points
-                except Exception:
-                    response = qdrant.query_points(
-                        collection_name=COLLECTION_NAME,
-                        query=query_vector,
-                        limit=3
-                    )
-                    search_results = response.points
-
-            t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
-            max_score = max([hit.score for hit in search_results]) if search_results else 0.0
-
-            # Если в базе нет данных или релевантность слишком низкая
-            if not search_results or max_score < 0.35:
-                answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-                log_event("KNOWLEDGE_GAP", f"Проект '{selected_project}' | Ненайденный вопрос: '{prompt}' (Max Score: {max_score*100:.1f}%)")
-            else:
-                context_chunks = [
-                    f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
-                    for hit in search_results
-                ]
-                context = "\n\n---\n\n".join(context_chunks)
-
-                llm_prompt = f"""Ты — вежливый виртуальный ассистент базы знаний проекта "{selected_project}".
-Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
-
---- ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ ---
-{context}
-
---- ВОПРОС ПОЛЬЗОВАТЕЛЯ ---
-{prompt}
-
---- ОТВЕТ ---"""
-
-                t_llm_start = time.perf_counter()
-                res = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": llm_prompt}],
-                    temperature=0.2
-                )
-                t_llm = time.perf_counter() - t_llm_start
-                t_total = time.perf_counter() - t_start
-
-                answer = res.choices[0].message.content
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-
-                log_event("QUERY", f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' | Токены: {res.usage.total_tokens}")
-
-                st.session_state.metrics_history.append({
-                    "Запрос №": len(st.session_state.metrics_history) + 1,
-                    "Входные токены": res.usage.prompt_tokens,
-                    "Выходные токены": res.usage.completion_tokens,
-                    "Всего токенов": res.usage.total_tokens,
-                    "Время ответа (сек)": round(t_total, 2),
-                    "Поиск Qdrant (мс)": round(t_qdrant, 0),
-                    "Проект": selected_project
-                })
-
-        # Мгновенно перезапускаем интерфейс, чтобы отрисовать кнопки оценки под новым ответом
-        st.rerun()
 # =====================================================================
 # 1. НАСТРОЙКИ КЛЮЧЕЙ И СТРАНИЦЫ
 # =====================================================================
@@ -130,7 +27,7 @@ LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
 
-# CSS для блокировки дублирующих модалок
+# CSS для блокировки всплывающих окон
 st.markdown(
     """
     <style>
@@ -224,7 +121,7 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 4. ФУНКЦИЯ ЛОГИРОВАНИЯ И ЧТЕНИЯ ЛОГОВ
+# 4. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
 # =====================================================================
 def log_event(action: str, details: str, ip: str = None, country: str = None, username: str = None, role: str = None):
     try:
@@ -273,7 +170,7 @@ def get_audit_logs():
                 "details": p.get("details", "")
             })
         return sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
-    except Exception as e:
+    except Exception:
         return []
 
 def get_db_files_summary():
@@ -358,7 +255,7 @@ if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
 # =====================================================================
-# 6. ЭКРАН ВХОДА В СИСТЕМУ
+# 6. ЭКРАН ВХОДА В СИСТЕМУ (LOGIN)
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -522,7 +419,7 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 8. ОСНОВНОЙ ИНТЕРФЕЙС
+# 8. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
 # =====================================================================
 st.title(f"🤖 AI Ассистент — [{selected_project}]")
 
@@ -538,77 +435,71 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ (👍/👎 + KNOWLEDGE GAP)
+# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ (👍/👎)
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
-        st.chat_message(msg["role"]).write(msg["content"])
-        
-        # Для ответов ассистента выводим кнопки обратной связи 👍 / 👎
-        if msg["role"] == "assistant" and msg_idx > 0:
-            c_fb1, c_fb2, c_fb3 = st.columns([1, 1, 10])
-            with c_fb1:
-                if st.button("👍", key=f"pos_{msg_idx}"):
-                    log_event("FEEDBACK_POSITIVE", f"Отличный ответ на запрос №{msg_idx//2}")
-                    st.toast("Спасибо за положительную оценку! 👍", icon="✅")
-            with c_fb2:
-                if st.button("👎", key=f"neg_{msg_idx}"):
-                    log_event("FEEDBACK_NEGATIVE", f"Замечание по ответу №{msg_idx//2}")
-                    st.toast("Спасибо! Мы передали отклик администраторам 🛠️", icon="📝")
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            
+            # Кнопки 👍 / 👎 выводим прямо внутри бабла ассистента
+            if msg["role"] == "assistant" and msg_idx > 0:
+                c_fb1, c_fb2, _ = st.columns([1, 1, 10])
+                with c_fb1:
+                    if st.button("👍", key=f"pos_{msg_idx}"):
+                        log_event("FEEDBACK_POSITIVE", f"Положительный отклик на ответ №{msg_idx}")
+                        st.toast("Спасибо за оценку! 👍", icon="✅")
+                with c_fb2:
+                    if st.button("👎", key=f"neg_{msg_idx}"):
+                        log_event("FEEDBACK_NEGATIVE", f"Замечание по ответу №{msg_idx}")
+                        st.toast("Спасибо! Отклик передан администраторам 📝", icon="📝")
 
     if prompt := st.chat_input(f"Задайте вопрос по проекту '{selected_project}'..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        st.chat_message("user").write(prompt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Поиск ответа в базе знаний..."):
-                t_start = time.perf_counter()
+        with st.spinner("Поиск ответа в базе знаний..."):
+            t_start = time.perf_counter()
 
-                query_vector = list(embedding_model.embed([prompt]))[0].tolist()
+            query_vector = list(embedding_model.embed([prompt]))[0].tolist()
 
-                t_qdrant_start = time.perf_counter()
-                search_results = []
-                
-                if active_sections:
-                    search_filter = Filter(
-                        must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
+            t_qdrant_start = time.perf_counter()
+            search_results = []
+            
+            if active_sections:
+                search_filter = Filter(
+                    must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
+                )
+                try:
+                    response = qdrant.query_points(
+                        collection_name=COLLECTION_NAME,
+                        query=query_vector,
+                        query_filter=search_filter,
+                        limit=3
                     )
-                    try:
-                        response = qdrant.query_points(
-                            collection_name=COLLECTION_NAME,
-                            query=query_vector,
-                            query_filter=search_filter,
-                            limit=3
-                        )
-                        search_results = response.points
-                    except Exception:
-                        response = qdrant.query_points(
-                            collection_name=COLLECTION_NAME,
-                            query=query_vector,
-                            limit=3
-                        )
-                        search_results = response.points
+                    search_results = response.points
+                except Exception:
+                    response = qdrant.query_points(
+                        collection_name=COLLECTION_NAME,
+                        query=query_vector,
+                        limit=3
+                    )
+                    search_results = response.points
 
-                t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
+            t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
+            max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-                # Детекция пробела в знаниях (если ничего не найдено или совпадение слабее 35%)
-                max_score = max([hit.score for hit in search_results]) if search_results else 0.0
+            if not search_results or max_score < 0.35:
+                answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                log_event("KNOWLEDGE_GAP", f"Проект '{selected_project}' | Ненайденный вопрос: '{prompt}' (Max Score: {max_score*100:.1f}%)")
+            else:
+                context_chunks = [
+                    f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
+                    for hit in search_results
+                ]
+                context = "\n\n---\n\n".join(context_chunks)
 
-                if not search_results or max_score < 0.35:
-                    answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
-                    st.write(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                    
-                    # Фиксация KNOWLEDGE_GAP в журнал логов
-                    log_event("KNOWLEDGE_GAP", f"Проект '{selected_project}' | Ненайденный вопрос: '{prompt}' (Max Score: {max_score*100:.1f}%)")
-                else:
-                    context_chunks = [
-                        f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
-                        for hit in search_results
-                    ]
-                    context = "\n\n---\n\n".join(context_chunks)
-
-                    llm_prompt = f"""Ты — вежливый виртуальный ассистент базы знаний проекта "{selected_project}".
+                llm_prompt = f"""Ты — вежливый виртуальный ассистент базы знаний проекта "{selected_project}".
 Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
 
 --- ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ ---
@@ -619,46 +510,31 @@ with tab_dict["💬 Чат по проекту"]:
 
 --- ОТВЕТ ---"""
 
-                    t_llm_start = time.perf_counter()
-                    res = groq_client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
-                        messages=[{"role": "user", "content": llm_prompt}],
-                        temperature=0.2
-                    )
-                    t_llm = time.perf_counter() - t_llm_start
-                    t_total = time.perf_counter() - t_start
+                t_llm_start = time.perf_counter()
+                res = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": llm_prompt}],
+                    temperature=0.2
+                )
+                t_llm = time.perf_counter() - t_llm_start
+                t_total = time.perf_counter() - t_start
 
-                    answer = res.choices[0].message.content
-                    st.write(answer)
+                answer = res.choices[0].message.content
+                st.session_state.messages.append({"role": "assistant", "content": answer})
 
-                    log_event("QUERY", f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' | Токены: {res.usage.total_tokens}")
+                log_event("QUERY", f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' | Токены: {res.usage.total_tokens}")
 
-                    st.session_state.metrics_history.append({
-                        "Запрос №": len(st.session_state.metrics_history) + 1,
-                        "Входные токены": res.usage.prompt_tokens,
-                        "Выходные токены": res.usage.completion_tokens,
-                        "Всего токенов": res.usage.total_tokens,
-                        "Время ответа (сек)": round(t_total, 2),
-                        "Поиск Qdrant (мс)": round(t_qdrant, 0),
-                        "Проект": selected_project
-                    })
+                st.session_state.metrics_history.append({
+                    "Запрос №": len(st.session_state.metrics_history) + 1,
+                    "Входные токены": res.usage.prompt_tokens,
+                    "Выходные токены": res.usage.completion_tokens,
+                    "Всего токенов": res.usage.total_tokens,
+                    "Время ответа (сек)": round(t_total, 2),
+                    "Поиск Qdrant (мс)": round(t_qdrant, 0),
+                    "Проект": selected_project
+                })
 
-                    with st.expander("📊 Метрики ответа и релевантность"):
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Общее время", f"{t_total:.2f} сек")
-                        col2.metric("Поиск Qdrant", f"{t_qdrant:.0f} мс")
-                        col3.metric("Генерация LLM", f"{t_llm:.2f} сек")
-                        col4.metric("Токены", res.usage.total_tokens)
-
-                        st.markdown("---")
-                        for idx, hit in enumerate(search_results, 1):
-                            score_pct = round(hit.score * 100, 1)
-                            src_file = hit.payload.get('source_file', 'Документ')
-                            src_section = hit.payload.get('section', 'Общий')
-                            st.write(f"**{idx}. [{src_section}] {src_file}** — `{score_pct}%`")
-
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
-                    st.rerun()
+        st.rerun()
 
 # ---------------------------------------------------------------------
 # ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ
@@ -807,7 +683,6 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
         logs_data = get_audit_logs()
         df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
 
-        # 1. ЖУРНАЛ АУДИТА
         with sub_tab_logs:
             st.write("История всех действий фиксируется в Qdrant Cloud:")
             if df_logs_all.empty:
@@ -818,10 +693,9 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                     use_container_width=True
                 )
 
-        # 2. ПРОБЕЛЫ В ЗНАНИЯХ И ОЦЕНКИ
         with sub_tab_gaps:
             st.markdown("### 🔍 Вопросы, на которые AI не нашел ответа (Knowledge Gaps)")
-            st.caption("Этот список показывает, каких именно документов и инструкций недостает в вашей базе знаний:")
+            st.caption("Этот список показывает, каких документов не хватает в вашей базе знаний:")
             
             if not df_logs_all.empty and "action" in df_logs_all.columns:
                 df_gaps = df_logs_all[df_logs_all["action"] == "KNOWLEDGE_GAP"]
@@ -847,7 +721,6 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                         use_container_width=True
                     )
 
-        # 3. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ
         with sub_tab_users:
             st.markdown("### 👥 Список зарегистрированных пользователей")
             
