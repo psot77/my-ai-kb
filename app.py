@@ -28,22 +28,24 @@ LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
 # =====================================================================
-# ПЕРЕХВАТ Ctrl+C / Cmd+C (Отключение вызова "Clear cache" при копировании)
+# НАДЕЖНЫЙ ПЕРЕХВАТ Ctrl+C / Cmd+C (Прямая инъекция в DOM главного окна)
 # =====================================================================
-components.html(
+st.markdown(
     """
-    <script>
-    const parentDoc = window.parent.document;
-    parentDoc.addEventListener('keydown', function(e) {
-        // Если нажаты C (копирование) с удержанием Ctrl или Cmd
-        if ((e.key === 'c' || e.key === 'C' || e.keyCode === 67) && (e.ctrlKey || e.metaKey)) {
-            e.stopPropagation(); // Не дает Streamlit вызвать горячую клавишу Clear Cache
+    <img src="x" onerror="
+        if (!window.copyFixApplied) {
+            window.copyFixApplied = true;
+            const preventCacheHotkey = function(e) {
+                if ((e.key === 'c' || e.key === 'C' || e.keyCode === 67) && (e.ctrlKey || e.metaKey)) {
+                    e.stopImmediatePropagation();
+                }
+            };
+            window.addEventListener('keydown', preventCacheHotkey, true);
+            document.addEventListener('keydown', preventCacheHotkey, true);
         }
-    }, true); // Phase: Capture (перехватываем до обработчика Streamlit)
-    </script>
+    " style="display:none;"/>
     """,
-    height=0,
-    width=0,
+    unsafe_allow_html=True
 )
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
