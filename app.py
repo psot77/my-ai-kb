@@ -27,6 +27,22 @@ COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
+# =====================================================================
+# БЛОКИРОВКА ВСПЛЫВАЮЩИХ МОДАЛЬНЫХ ОКЕН ЧЕРЕЗ CSS
+# =====================================================================
+st.markdown(
+    """
+    <style>
+    /* Скрытие модального окна Clear Caches */
+    div[role="dialog"], div[data-testid="stModal"] {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 import streamlit.components.v1 as components
 
 # =====================================================================
