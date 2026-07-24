@@ -23,9 +23,9 @@ COLLECTION_NAME = "knowledge_base"
 st.set_page_config(page_title="Модульная База Знаний AI", page_icon="📚", layout="wide")
 
 # =====================================================================
-# 2. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ И ИНДЕКСОВ
+# 2. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ (RAM)
 # =====================================================================
-@st.cache_resource
+@st.cache_resource(max_entries=1)  # Жёсткий лимит: хранить в памяти только 1 экземпляр
 def init_services():
     qdrant = QdrantClient(
         url=QDRANT_URL, 
@@ -35,6 +35,7 @@ def init_services():
         check_compatibility=False
     )
     
+    # Проверка и создание коллекции
     collections = [c.name for c in qdrant.get_collections().collections]
     if COLLECTION_NAME not in collections:
         qdrant.create_collection(
@@ -42,7 +43,7 @@ def init_services():
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
     
-    # Индексы для фильтрации по разделам и проектам
+    # Создание индексов фильтрации
     for field in ["section", "project"]:
         try:
             qdrant.create_payload_index(
@@ -54,11 +55,15 @@ def init_services():
             pass
         
     groq_client = Groq(api_key=GROQ_API_KEY)
-    embed_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
+    
+    # Оптимизированная загрузка модели векторизации (1 поток = минимум использования RAM)
+    embed_model = TextEmbedding(
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        threads=1
+    )
     return qdrant, groq_client, embed_model
 
 qdrant, groq_client, embedding_model = init_services()
-
 # =====================================================================
 # 3. ИНИЦИАЛИЗАЦИЯ СЕССИИ (Разделы и Проекты)
 # =====================================================================
