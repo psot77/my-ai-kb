@@ -435,14 +435,14 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ (👍/👎)
+# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ С ПОЛЕМ ДЛЯ КОММЕНТАРИЯ
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             
-            # Кнопки 👍 / 👎 выводим прямо внутри бабла ассистента
+            # Кнопки 👍 / 👎 выводим внутри контейнера ассистента
             if msg["role"] == "assistant" and msg_idx > 0:
                 c_fb1, c_fb2, _ = st.columns([1, 1, 10])
                 with c_fb1:
@@ -451,8 +451,24 @@ with tab_dict["💬 Чат по проекту"]:
                         st.toast("Спасибо за оценку! 👍", icon="✅")
                 with c_fb2:
                     if st.button("👎", key=f"neg_{msg_idx}"):
-                        log_event("FEEDBACK_NEGATIVE", f"Замечание по ответу №{msg_idx}")
-                        st.toast("Спасибо! Отклик передан администраторам 📝", icon="📝")
+                        # Активируем форму комментария
+                        st.session_state[f"show_dislike_form_{msg_idx}"] = True
+
+                # Если нажат 👎, отображаем форму с полем ввода
+                if st.session_state.get(f"show_dislike_form_{msg_idx}", False):
+                    with st.form(key=f"dislike_form_{msg_idx}"):
+                        st.caption("📝 **Опишите, что именно не так в ответе:**")
+                        user_comment = st.text_input(
+                            "Замечание:", 
+                            placeholder="Например: устаревший регламент, неточная формулировка...", 
+                            key=f"comment_input_{msg_idx}"
+                        )
+                        if st.form_submit_button("Отправить отзыв", use_container_width=True):
+                            comment_msg = f"Замечание по ответу №{msg_idx}: '{user_comment}'" if user_comment else f"Замечание по ответу №{msg_idx} (без описания)"
+                            log_event("FEEDBACK_NEGATIVE", comment_msg)
+                            st.toast("Спасибо! Отклик сохранен и передан администраторам 📝", icon="📝")
+                            st.session_state[f"show_dislike_form_{msg_idx}"] = False
+                            st.rerun()
 
     if prompt := st.chat_input(f"Задайте вопрос по проекту '{selected_project}'..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
