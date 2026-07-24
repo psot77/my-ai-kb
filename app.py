@@ -14,7 +14,110 @@ from qdrant_client.models import (
 )
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from groq import Groq
+# ---------------------------------------------------------------------
+# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ (👍/👎 + KNOWLEDGE GAP)
+# ---------------------------------------------------------------------
+with tab_dict["💬 Чат по проекту"]:
+    # Отрисовка всех сообщений из истории
+    for msg_idx, msg in enumerate(st.session_state.messages):
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            
+            # Кнопки 👍 / 👎 выводим прямо внутри диалогового бабла ассистента
+            if msg["role"] == "assistant" and msg_idx > 0:
+                c_fb1, c_fb2, _ = st.columns([1, 1, 10])
+                with c_fb1:
+                    if st.button("👍", key=f"pos_{msg_idx}"):
+                        log_event("FEEDBACK_POSITIVE", f"Положительный отклик на ответ №{msg_idx}")
+                        st.toast("Спасибо за оценку! 👍", icon="✅")
+                with c_fb2:
+                    if st.button("👎", key=f"neg_{msg_idx}"):
+                        log_event("FEEDBACK_NEGATIVE", f"Замечание по ответу №{msg_idx}")
+                        st.toast("Спасибо! Отклик передан администраторам 📝", icon="📝")
 
+    # Поле ввода вопроса
+    if prompt := st.chat_input(f"Задайте вопрос по проекту '{selected_project}'..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+
+        with st.spinner("Поиск ответа в базе знаний..."):
+            t_start = time.perf_counter()
+            query_vector = list(embedding_model.embed([prompt]))[0].tolist()
+
+            t_qdrant_start = time.perf_counter()
+            search_results = []
+            
+            if active_sections:
+                search_filter = Filter(
+                    must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
+                )
+                try:
+                    response = qdrant.query_points(
+                        collection_name=COLLECTION_NAME,
+                        query=query_vector,
+                        query_filter=search_filter,
+                        limit=3
+                    )
+                    search_results = response.points
+                except Exception:
+                    response = qdrant.query_points(
+                        collection_name=COLLECTION_NAME,
+                        query=query_vector,
+                        limit=3
+                    )
+                    search_results = response.points
+
+            t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
+            max_score = max([hit.score for hit in search_results]) if search_results else 0.0
+
+            # Если в базе нет данных или релевантность слишком низкая
+            if not search_results or max_score < 0.35:
+                answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+                log_event("KNOWLEDGE_GAP", f"Проект '{selected_project}' | Ненайденный вопрос: '{prompt}' (Max Score: {max_score*100:.1f}%)")
+            else:
+                context_chunks = [
+                    f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
+                    for hit in search_results
+                ]
+                context = "\n\n---\n\n".join(context_chunks)
+
+                llm_prompt = f"""Ты — вежливый виртуальный ассистент базы знаний проекта "{selected_project}".
+Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
+
+--- ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ ---
+{context}
+
+--- ВОПРОС ПОЛЬЗОВАТЕЛЯ ---
+{prompt}
+
+--- ОТВЕТ ---"""
+
+                t_llm_start = time.perf_counter()
+                res = groq_client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[{"role": "user", "content": llm_prompt}],
+                    temperature=0.2
+                )
+                t_llm = time.perf_counter() - t_llm_start
+                t_total = time.perf_counter() - t_start
+
+                answer = res.choices[0].message.content
+                st.session_state.messages.append({"role": "assistant", "content": answer})
+
+                log_event("QUERY", f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' | Токены: {res.usage.total_tokens}")
+
+                st.session_state.metrics_history.append({
+                    "Запрос №": len(st.session_state.metrics_history) + 1,
+                    "Входные токены": res.usage.prompt_tokens,
+                    "Выходные токены": res.usage.completion_tokens,
+                    "Всего токенов": res.usage.total_tokens,
+                    "Время ответа (сек)": round(t_total, 2),
+                    "Поиск Qdrant (мс)": round(t_qdrant, 0),
+                    "Проект": selected_project
+                })
+
+        # Мгновенно перезапускаем интерфейс, чтобы отрисовать кнопки оценки под новым ответом
+        st.rerun()
 # =====================================================================
 # 1. НАСТРОЙКИ КЛЮЧЕЙ И СТРАНИЦЫ
 # =====================================================================
