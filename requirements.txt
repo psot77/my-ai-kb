@@ -6,3 +6,5 @@ langchain-text-splitters
 pandas
 pypdf
 python-docx
+reportlab
+python-telegram-bot
