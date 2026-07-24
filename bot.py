@@ -2,8 +2,13 @@ import os
 import io
 import asyncio
 import logging
-import requests
 import time
+import requests
+import urllib3.util.connection as urllib3_cn
+
+# 1. ОТКЛЮЧЕНИЕ IPV6 (Решает ошибку Errno -5 в сети Render)
+urllib3_cn.HAS_IPV6 = False
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from qdrant_client import QdrantClient
@@ -13,7 +18,7 @@ from groq import Groq
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ БОТА С ИСПРАВЛЕННЫМ HF API ===")
+logger.info("=== СТАРТ BOT.PY (IPV4 ONLY + NEW HF ROUTER API) ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -23,15 +28,20 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Инициализация клиентов
+# Клиенты баз данных
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 def get_cloud_embedding(text: str) -> list:
-    """Получение вектора через корректный эндпоинт Hugging Face API"""
-    url = "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    """Получение вектора через новый Hugging Face Router API"""
+    urls = [
+        "https://router.huggingface.co/hf-inference/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    ]
+    
     headers = {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN.strip()}"
@@ -39,28 +49,29 @@ def get_cloud_embedding(text: str) -> list:
     payload = {"inputs": text, "options": {"wait_for_model": True}}
     
     last_error = None
-    for attempt in range(5):
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=20)
-            if response.status_code == 200:
-                data = response.json()
-                while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-                    data = data[0]
-                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
-                    return [float(x) for x in data]
-                raise Exception(f"Неожиданный формат ответа от HF: {data}")
-            elif response.status_code == 503:
-                logger.warning(f"Модель HF разогревается (503). Повтор через 3 сек... (Попытка {attempt + 1}/5)")
-                time.sleep(3)
-            else:
-                logger.warning(f"HF API статус {response.status_code}: {response.text}")
-                last_error = f"HTTP {response.status_code}: {response.text}"
-                time.sleep(2)
-        except Exception as e:
-            logger.warning(f"Ошибка запроса эмбеддинга (попытка {attempt + 1}): {e}")
-            last_error = str(e)
-            time.sleep(2)
-            
+    for url in urls:
+        for attempt in range(3):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=20)
+                if response.status_code == 200:
+                    data = response.json()
+                    while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                        data = data[0]
+                    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
+                        return [float(x) for x in data]
+                    raise Exception(f"Неожиданный формат ответа: {data}")
+                elif response.status_code == 503:
+                    logger.warning(f"Модель разогревается (503) на {url}. Ждем 3 сек... (Попытка {attempt + 1}/3)")
+                    time.sleep(3)
+                else:
+                    last_error = f"HTTP {response.status_code}: {response.text}"
+                    logger.warning(f"Ошибка {url}: {last_error}")
+                    time.sleep(1)
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Ошибка соединения с {url}: {e}")
+                time.sleep(1)
+                
     raise Exception(f"Не удалось получить вектор текста: {last_error}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
