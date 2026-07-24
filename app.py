@@ -25,7 +25,7 @@ st.set_page_config(page_title="Модульная База Знаний AI", pag
 # =====================================================================
 # 2. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ (RAM)
 # =====================================================================
-@st.cache_resource(max_entries=1)  # Жёсткий лимит: хранить в памяти только 1 экземпляр
+@st.cache_resource(max_entries=1)
 def init_services():
     qdrant = QdrantClient(
         url=QDRANT_URL, 
@@ -35,7 +35,6 @@ def init_services():
         check_compatibility=False
     )
     
-    # Проверка и создание коллекции
     collections = [c.name for c in qdrant.get_collections().collections]
     if COLLECTION_NAME not in collections:
         qdrant.create_collection(
@@ -43,7 +42,6 @@ def init_services():
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
     
-    # Создание индексов фильтрации
     for field in ["section", "project"]:
         try:
             qdrant.create_payload_index(
@@ -56,7 +54,6 @@ def init_services():
         
     groq_client = Groq(api_key=GROQ_API_KEY)
     
-    # Оптимизированная загрузка модели векторизации (1 поток = минимум использования RAM)
     embed_model = TextEmbedding(
         model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
         threads=1
@@ -64,13 +61,13 @@ def init_services():
     return qdrant, groq_client, embed_model
 
 qdrant, groq_client, embedding_model = init_services()
+
 # =====================================================================
-# 3. ИНИЦИАЛИЗАЦИЯ СЕССИИ (Разделы и Проекты)
+# 3. ИНИЦИАЛИЗАЦИЯ СЕССИИ И ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # =====================================================================
 if "sections" not in st.session_state:
     st.session_state.sections = ["Общий раздел", "Продажи и CRM", "Регламенты", "Техническая часть"]
 
-# Проверка: если projects отсутствует ИЛИ это старый список вместо словаря — пересоздаем
 if "projects" not in st.session_state or isinstance(st.session_state.projects, list):
     st.session_state.projects = {
         "Общий проект": ["Общий раздел"],
@@ -86,22 +83,27 @@ if "messages" not in st.session_state:
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
+# Функция экспорт истории (объявлена до вызова в боковом меню)
+def export_chat_history():
+    text = f"# 📝 История диалога (Проект: {st.session_state.get('selected_project', 'Общий')})\n\n"
+    for msg in st.session_state.messages:
+        role = "👤 **Пользователь**" if msg["role"] == "user" else "🤖 **Ассистент**"
+        text += f"{role}:\n{msg['content']}\n\n---\n\n"
+    return text
+
 # =====================================================================
-# 4. БОКОВАЯ ПАНЕЛЬ (СОЗДАНИЕ И НАСТРОЙКА ПРОЕКТОВ)
+# 4. БОКОВАЯ ПАНЕЛЬ
 # =====================================================================
 with st.sidebar:
     st.header("📂 Проекты и Настройки")
     
-    # 1. Выбор активного проекта
     project_names = list(st.session_state.projects.keys())
     selected_project = st.selectbox("Активный проект:", project_names)
     st.session_state.selected_project = selected_project
     
-    # Получаем подключенные разделы для текущего проекта
     active_sections = st.session_state.projects.get(selected_project, [])
     st.caption(f"Подключенные разделы: **{', '.join(active_sections) if active_sections else 'Нет'}**")
 
-    # 2. Создание нового проекта с выбором разделов
     with st.expander("➕ Создать новый проект"):
         new_proj_name = st.text_input("Имя проекта:")
         chosen_sections = st.multiselect(
@@ -115,7 +117,6 @@ with st.sidebar:
                 st.success(f"Проект '{new_proj_name}' успешно создан!")
                 st.rerun()
 
-    # 3. Редактирование разделов текущего проекта
     with st.expander("⚙️ Изменить разделы проекта"):
         updated_sections = st.multiselect(
             f"Разделы для '{selected_project}':",
@@ -129,7 +130,6 @@ with st.sidebar:
 
     st.divider()
     
-    # Статистика по выбранным разделам
     st.header("📊 Статистика хранилища")
     try:
         if active_sections:
@@ -163,7 +163,7 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 5. ОСНОВНОЙ ИНТЕРФЕЙС (ВКЛАДКИ)
+# 5. ОСНОВНОЙ ИНТЕРФЕЙС
 # =====================================================================
 st.title(f"🤖 Ассистент — [{selected_project}]")
 
@@ -174,7 +174,7 @@ tab_chat, tab_upload, tab_analytics = st.tabs([
 ])
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ ПО ПРОЕКТУ
+# ВКЛАДКА 1: ЧАТ
 # ---------------------------------------------------------------------
 with tab_chat:
     for msg in st.session_state.messages:
@@ -188,17 +188,14 @@ with tab_chat:
             with st.spinner("Поиск информации в подключенных разделах..."):
                 t_start = time.perf_counter()
 
-                # 1. Векторизация
                 t_embed_start = time.perf_counter()
                 query_vector = list(embedding_model.embed([prompt]))[0].tolist()
                 t_embed = (time.perf_counter() - t_embed_start) * 1000
 
-                # 2. Поиск в Qdrant по ПОДКЛЮЧЕННЫМ РАЗДЕЛАМ (MatchAny)
                 t_qdrant_start = time.perf_counter()
                 search_results = []
                 
                 if active_sections:
-                    # Фильтр ищет совпадение в любом из подключенных разделов
                     search_filter = Filter(
                         must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
                     )
@@ -211,7 +208,6 @@ with tab_chat:
                         )
                         search_results = response.points
                     except Exception:
-                        # Резервный вариант на случай старых данных
                         response = qdrant.query_points(
                             collection_name=COLLECTION_NAME,
                             query=query_vector,
@@ -244,7 +240,6 @@ with tab_chat:
 
 --- ОТВЕТ ---"""
 
-                    # 3. Запрос к LLM (Groq)
                     t_llm_start = time.perf_counter()
                     res = groq_client.chat.completions.create(
                         model="llama-3.3-70b-versatile",
@@ -257,7 +252,6 @@ with tab_chat:
                     answer = res.choices[0].message.content
                     st.write(answer)
 
-                    # Сохранение метрик
                     st.session_state.metrics_history.append({
                         "Запрос №": len(st.session_state.metrics_history) + 1,
                         "Входные токены": res.usage.prompt_tokens,
@@ -268,7 +262,6 @@ with tab_chat:
                         "Проект": selected_project
                     })
 
-                    # Вывод метрик под ответом
                     with st.expander("📊 Метрики ответа и релевантность источников"):
                         col1, col2, col3, col4 = st.columns(4)
                         col1.metric("Общее время", f"{t_total:.2f} сек")
@@ -287,7 +280,7 @@ with tab_chat:
                     st.session_state.messages.append({"role": "assistant", "content": answer})
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 2: ЗАГРУЗКА .MD ФАЙЛОВ ПО РАЗДЕЛАМ
+# ВКЛАДКА 2: ЗАГРУЗКА .MD ФАЙЛОВ
 # ---------------------------------------------------------------------
 with tab_upload:
     st.subheader("📁 Пополнение Базы Знаний по Разделам")
@@ -295,11 +288,9 @@ with tab_upload:
     col_up1, col_up2 = st.columns([2, 1])
     
     with col_up1:
-        # Выбор целевого раздела для загрузки
         target_section = st.selectbox("Выберите раздел, куда загрузить файлы:", st.session_state.sections)
     
     with col_up2:
-        # Возможность добавить новый раздел на лету
         new_sec_input = st.text_input("➕ Или создайте новый раздел:")
         if st.button("Добавить раздел", use_container_width=True):
             if new_sec_input and new_sec_input not in st.session_state.sections:
@@ -343,7 +334,7 @@ with tab_upload:
                             payload={
                                 "text": texts[idx],
                                 "source_file": file.name,
-                                "section": target_section,  # Привязка к конкретному разделу
+                                "section": target_section,
                                 **metadatas[idx]
                             }
                         )
