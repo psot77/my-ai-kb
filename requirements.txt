@@ -2,3 +2,4 @@ streamlit
 qdrant-client
 fastembed
 groq
+langchain-text-splitters
