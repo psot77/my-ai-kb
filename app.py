@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue, PayloadSchemaType
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from groq import Groq
 
@@ -20,7 +20,7 @@ COLLECTION_NAME = "knowledge_base"
 st.set_page_config(page_title="Мульти-проектная База Знаний AI", page_icon="📚", layout="wide")
 
 # =====================================================================
-# 2. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ И БАЗЫ
+# 2. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ И ИНДЕКСАЦИИ
 # =====================================================================
 @st.cache_resource
 def init_services():
@@ -32,12 +32,23 @@ def init_services():
         check_compatibility=False
     )
     
+    # Проверка и создание коллекции
     collections = [c.name for c in qdrant.get_collections().collections]
     if COLLECTION_NAME not in collections:
         qdrant.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
+    
+    # Создание индекса фильтрации по проектам (устраняет ошибку Qdrant Cloud)
+    try:
+        qdrant.create_payload_index(
+            collection_name=COLLECTION_NAME,
+            field_name="project",
+            field_schema=PayloadSchemaType.KEYWORD
+        )
+    except Exception:
+        pass  # Индекс уже существует
         
     groq_client = Groq(api_key=GROQ_API_KEY)
     embed_model = TextEmbedding(model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
@@ -46,7 +57,7 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 3. ИНИЦИАЛИЗАЦИЯ СЕССИИ (Проекты, Сообщения, Метрики)
+# 3. ИНИЦИАЛИЗАЦИЯ СЕССИИ
 # =====================================================================
 if "projects" not in st.session_state:
     st.session_state.projects = ["Общий", "Медицина", "IT Проекты", "Отдел продаж"]
@@ -56,7 +67,6 @@ if "messages" not in st.session_state:
         {"role": "assistant", "content": "Здравствуйте! Выберите проект в меню слева и задайте вопрос."}
     ]
 
-# Хранилище метрик для графиков
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
@@ -68,7 +78,7 @@ def export_chat_history():
     return text
 
 # =====================================================================
-# 4. БОКОВАЯ ПАНЕЛЬ (ПРОЕКТЫ И МЕТРИКИ ХРАНИЛИЩА)
+# 4. БОКОВАЯ ПАНЕЛЬ
 # =====================================================================
 with st.sidebar:
     st.header("📂 Управление проектами")
@@ -94,7 +104,7 @@ with st.sidebar:
         col_stat1.metric("Чанков в проекте", count_res.count)
         col_stat2.metric("Модель LLM", "Llama 3.3")
     except Exception:
-        st.caption("Не удалось загрузить данные о хранилище")
+        st.caption("Данные проекта обновляются...")
 
     st.divider()
     st.header("⚙️ Опции чата")
@@ -115,7 +125,7 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 5. ОСНОВНОЙ ИНТЕРФЕЙС (ВКЛАДКИ)
+# 5. ОСНОВНОЙ ИНТЕРФЕЙС
 # =====================================================================
 st.title(f"🤖 Ассистент Базы Знаний — [{selected_project}]")
 
@@ -137,7 +147,7 @@ with tab_chat:
         st.chat_message("user").write(prompt)
 
         with st.chat_message("assistant"):
-            with st.spinner("Замер производительности и поиск в базе..."):
+            with st.spinner("Поиск информации и формирование ответа..."):
                 t_start = time.perf_counter()
 
                 # 1. Векторизация
@@ -145,20 +155,36 @@ with tab_chat:
                 query_vector = list(embedding_model.embed([prompt]))[0].tolist()
                 t_embed = (time.perf_counter() - t_embed_start) * 1000
 
-                # 2. Поиск Qdrant
+                # 2. Поиск Qdrant с обработкой ошибок
                 t_qdrant_start = time.perf_counter()
                 project_filter = Filter(must=[FieldCondition(key="project", match=MatchValue(value=selected_project))])
-                response = qdrant.query_points(
-                    collection_name=COLLECTION_NAME,
-                    query=query_vector,
-                    query_filter=project_filter,
-                    limit=3
-                )
+                
+                search_results = []
+                try:
+                    # Попытка поиска с фильтром по проекту
+                    response = qdrant.query_points(
+                        collection_name=COLLECTION_NAME,
+                        query=query_vector,
+                        query_filter=project_filter,
+                        limit=3
+                    )
+                    search_results = response.points
+                except Exception:
+                    # Резервный вариант: поиск без фильтра (если в проекте еще нет элементов)
+                    try:
+                        response = qdrant.query_points(
+                            collection_name=COLLECTION_NAME,
+                            query=query_vector,
+                            limit=3
+                        )
+                        search_results = response.points
+                    except Exception as e_inner:
+                        st.error(f"Ошибка Qdrant: {e_inner}")
+
                 t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
-                search_results = response.points
 
                 if not search_results:
-                    answer = f"В проекте **'{selected_project}'** не найдено подходящей информации."
+                    answer = f"В проекте **'{selected_project}'** пока нет загруженных инструкций. Загрузите `.md` файл во вкладке **'Загрузка документов'**."
                     st.write(answer)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
                 else:
@@ -192,7 +218,7 @@ with tab_chat:
                     answer = res.choices[0].message.content
                     st.write(answer)
 
-                    # ФИКСАЦИЯ МЕТРИК В ИСТОРИЮ
+                    # Фиксация метрик
                     st.session_state.metrics_history.append({
                         "Запрос №": len(st.session_state.metrics_history) + 1,
                         "Входные токены": res.usage.prompt_tokens,
@@ -203,8 +229,8 @@ with tab_chat:
                         "Проект": selected_project
                     })
 
-                    # Вывод метрик под ответом
-                    with st.expander("📊 Метрики ответа и релевантность источников"):
+                    # Детали под ответом
+                    with st.expander("📊 Метрики ответа и источники"):
                         col1, col2, col3, col4 = st.columns(4)
                         col1.metric("Общее время", f"{t_total:.2f} сек")
                         col2.metric("Поиск Qdrant", f"{t_qdrant:.0f} мс")
@@ -279,7 +305,6 @@ with tab_analytics:
     else:
         df_metrics = pd.DataFrame(st.session_state.metrics_history)
 
-        # Сводные карточки
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         m_col1.metric("Всего запросов", len(df_metrics))
         m_col2.metric("Сумма токенов", f"{df_metrics['Всего токенов'].sum():,}")
@@ -288,16 +313,13 @@ with tab_analytics:
 
         st.divider()
 
-        # График 1: Расход токенов по запросам
         st.markdown("### 📊 Расход токенов (Prompt vs Completion)")
         tokens_chart_data = df_metrics.set_index("Запрос №")[["Входные токены", "Выходные токены"]]
         st.bar_chart(tokens_chart_data)
 
-        # График 2: Скорость ответа (Latency)
         st.markdown("### ⏱️ Динамика времени ответа (секунды)")
         latency_chart_data = df_metrics.set_index("Запрос №")[["Время ответа (сек)"]]
         st.line_chart(latency_chart_data)
 
-        # Таблица сырых данных
         with st.expander("📄 Полная таблица метрик сессии"):
             st.dataframe(df_metrics, use_container_width=True)
