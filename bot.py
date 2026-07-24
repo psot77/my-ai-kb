@@ -1,16 +1,20 @@
 import os
+import socket
 
-# Ограничение потоков для предотвращения утечек памяти на Render
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
+# 1. ПРИНУДИТЕЛЬНЫЙ IPV4 (Устраняет ошибки сети/DNS [Errno -5] на Render)
+old_getaddrinfo = socket.getaddrinfo
+def new_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    return [r for r in responses if r[0] == socket.AF_INET]
+socket.getaddrinfo = new_getaddrinfo
 
 import io
 import asyncio
 import logging
+import requests
+import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from groq import Groq
 
@@ -18,32 +22,57 @@ from groq import Groq
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ АВТОНОМНОГО BOT.PY (PYTHON 3.11) ===")
+logger.info("=== СТАРТ УЛЬТРА-ЛЕГКОГО BOT.PY ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+HF_TOKEN = os.getenv("HF_TOKEN")
 
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Глобальные переменные для ленивой инициализации
-_qdrant = None
-_groq_client = None
-_embedding_model = None
+# Клиенты баз данных
+qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
-def get_services():
-    global _qdrant, _groq_client, _embedding_model
-    if _qdrant is None:
-        logger.info("Инициализация Qdrant, Groq и локальной модели FastEmbed...")
-        _qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
-        _groq_client = Groq(api_key=GROQ_API_KEY)
-        _embedding_model = TextEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            threads=1
-        )
-        logger.info("Все сервисы успешно инициализированы!")
-    return _qdrant, _groq_client, _embedding_model
+def get_cloud_embedding(text: str) -> list:
+    """Получение вектора через Hugging Face API без нагрузки на память сервера"""
+    url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN.strip()}"
+        
+    payload = {"inputs": text, "options": {"wait_for_model": True}}
+    
+    last_error = None
+    for attempt in range(5):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                data = response.json()
+                # Извлекаем вложенные списки [[...]]
+                while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                    data = data[0]
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
+                    return [float(x) for x in data]
+                raise Exception(f"Необычный ответ от HF: {data}")
+            elif response.status_code == 503:
+                logger.warning(f"Модель HF разогревается (503). Ждем 4 сек... (Попытка {attempt + 1}/5)")
+                time.sleep(4)
+            else:
+                logger.warning(f"HF API статус {response.status_code}: {response.text}")
+                last_error = f"HTTP {response.status_code}: {response.text}"
+                time.sleep(2)
+        except Exception as e:
+            logger.warning(f"Сетевая ошибка при запросе эмбеддинга (попытка {attempt + 1}): {e}")
+            last_error = str(e)
+            time.sleep(2)
+            
+    raise Exception(f"Не удалось получить вектор текста: {last_error}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
@@ -54,12 +83,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def search_rag_answer(query_text: str) -> str:
     try:
-        qdrant_client, groq_cl, embed_model = get_services()
+        query_vector = get_cloud_embedding(query_text)
         
-        # Локальное создание вектора
-        query_vector = list(embed_model.embed([query_text]))[0].tolist()
-        
-        response = qdrant_client.query_points(
+        response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
             limit=3
@@ -87,7 +113,7 @@ def search_rag_answer(query_text: str) -> str:
 
 --- ОТВЕТ ---"""
 
-        res = groq_cl.chat.completions.create(
+        res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": llm_prompt}],
             temperature=0.2
@@ -115,15 +141,13 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.info("Обработка голосового сообщения...")
         await update.message.reply_chat_action("typing")
         
-        _, groq_cl, _ = get_services()
-        
         voice_file = await context.bot.get_file(update.message.voice.file_id)
         voice_bytes = await voice_file.download_as_bytearray()
         
         audio_io = io.BytesIO(voice_bytes)
         audio_io.name = "voice.ogg"
 
-        transcription = groq_cl.audio.transcriptions.create(
+        transcription = groq_client.audio.transcriptions.create(
             file=audio_io,
             model="whisper-large-v3-turbo",
             prompt="Запрос на русском языке по базе знаний",
