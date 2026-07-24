@@ -1,25 +1,30 @@
 import os
+import socket
 
-# Жестко ограничиваем потоки ONNX/OpenMP до 1, чтобы не расходовать память на Render (RAM < 200 MB)
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# ---------------------------------------------------------------------
+# 1. ПРИНУДИТЕЛЬНЫЙ IPV4 (Решает ошибку DNS [Errno -5] на Render)
+# ---------------------------------------------------------------------
+old_getaddrinfo = socket.getaddrinfo
+def new_getaddrinfo(*args, **kwargs):
+    responses = old_getaddrinfo(*args, **kwargs)
+    return [response for response in responses if response[0] == socket.AF_INET]
+socket.getaddrinfo = new_getaddrinfo
 
 import io
 import asyncio
 import logging
+import requests
+import time
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 from groq import Groq
 
-# Подробное логирование
+# Логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ АВТОНОМНОГО BOT.PY (FASTEMBED 1 THREAD) ===")
+logger.info("=== СТАРТ УЛЬТРА-ЛЕГКОГО BOT.PY (RAM < 40 MB) ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -28,17 +33,33 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Инициализация сервисов при запуске
-logger.info("Подключение к Qdrant и Groq...")
+# Клиенты баз данных
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-logger.info("Загрузка легкой модели FastEmbed в 1 поток...")
-embedding_model = TextEmbedding(
-    model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-    threads=1
-)
-logger.info("Модель FastEmbed успешно загружена в память!")
+def get_cloud_embedding(text: str) -> list:
+    """Бессбойное получение вектора через HF API с повторными попытками"""
+    url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    payload = {"inputs": text, "options": {"wait_for_model": True}}
+    
+    for attempt in range(3):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
+            if response.status_code == 200:
+                res = response.json()
+                if isinstance(res, list):
+                    return res if isinstance(res[0], float) else res[0]
+            logger.warning(f"Попытка {attempt + 1}: Статус HF API {response.status_code}. Повтор...")
+            time.sleep(1)
+        except Exception as e:
+            logger.warning(f"Попытка {attempt + 1} закончилась ошибкой: {e}")
+            time.sleep(1)
+            
+    raise Exception("Не удалось получить вектор через облачный сервис. Попробуйте еще раз.")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
@@ -49,10 +70,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def search_rag_answer(query_text: str) -> str:
     try:
-        # Локальное вычисление вектора (быстро и без сетевых ошибок)
-        query_vector = list(embedding_model.embed([query_text]))[0].tolist()
+        query_vector = get_cloud_embedding(query_text)
         
-        # Поиск в базе знаний Qdrant
         response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
@@ -70,7 +89,6 @@ def search_rag_answer(query_text: str) -> str:
         ]
         context = "\n\n---\n\n".join(context_chunks)
 
-        # Формирование запроса к Groq LLM
         llm_prompt = f"""Ты — вежливый виртуальный ассистент корпоративной базы знаний.
 Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
 
@@ -89,7 +107,7 @@ def search_rag_answer(query_text: str) -> str:
         )
         return res.choices[0].message.content
     except Exception as e:
-        logger.error(f"Ошибка в RAG: {e}", exc_info=True)
+        logger.error(f"Ошибка RAG: {e}", exc_info=True)
         return f"⚠️ Произошла ошибка при поиске: {e}"
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -145,5 +163,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Telegram-бот успешно запущен!")
+    logger.info("🤖 УСПЕХ: Бот мгновенно запущен!")
     app.run_polling()
