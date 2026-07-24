@@ -1,3 +1,4 @@
+import streamlit.components.v1 as components
 import uuid
 import time
 import hashlib
@@ -26,7 +27,24 @@ COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
-
+# =====================================================================
+# ПЕРЕХВАТ Ctrl+C / Cmd+C (Отключение вызова "Clear cache" при копировании)
+# =====================================================================
+components.html(
+    """
+    <script>
+    const parentDoc = window.parent.document;
+    parentDoc.addEventListener('keydown', function(e) {
+        // Если нажаты C (копирование) с удержанием Ctrl или Cmd
+        if ((e.key === 'c' || e.key === 'C' || e.keyCode === 67) && (e.ctrlKey || e.metaKey)) {
+            e.stopPropagation(); // Не дает Streamlit вызвать горячую клавишу Clear Cache
+        }
+    }, true); // Phase: Capture (перехватываем до обработчика Streamlit)
+    </script>
+    """,
+    height=0,
+    width=0,
+)
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
