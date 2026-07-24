@@ -27,7 +27,6 @@ LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
 
-# CSS для блокировки всплывающих окон
 st.markdown(
     """
     <style>
@@ -255,7 +254,7 @@ if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
 # =====================================================================
-# 6. ЭКРАН ВХОДА В СИСТЕМУ (LOGIN)
+# 6. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -435,26 +434,29 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ С ПОЛЕМ ДЛЯ КОММЕНТАРИЯ
+# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ С СВЯЗКОЙ ВОПРОСА И КОММЕНТАРИЯ
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             
-            # Кнопки 👍 / 👎 выводим внутри контейнера ассистента
+            # Кнопки 👍 / 👎 внутри контейнера ассистента
             if msg["role"] == "assistant" and msg_idx > 0:
                 c_fb1, c_fb2, _ = st.columns([1, 1, 10])
+                
+                # Поиск исходного вопроса пользователя (msg_idx - 1)
+                user_prompt_text = st.session_state.messages[msg_idx - 1]["content"] if msg_idx > 0 else "Вопрос не найден"
+                
                 with c_fb1:
                     if st.button("👍", key=f"pos_{msg_idx}"):
-                        log_event("FEEDBACK_POSITIVE", f"Положительный отклик на ответ №{msg_idx}")
+                        log_event("FEEDBACK_POSITIVE", f"Вопрос: '{user_prompt_text}' | Отклик: Отличный ответ")
                         st.toast("Спасибо за оценку! 👍", icon="✅")
                 with c_fb2:
                     if st.button("👎", key=f"neg_{msg_idx}"):
-                        # Активируем форму комментария
                         st.session_state[f"show_dislike_form_{msg_idx}"] = True
 
-                # Если нажат 👎, отображаем форму с полем ввода
+                # Форма комментария при дизлайке
                 if st.session_state.get(f"show_dislike_form_{msg_idx}", False):
                     with st.form(key=f"dislike_form_{msg_idx}"):
                         st.caption("📝 **Опишите, что именно не так в ответе:**")
@@ -464,9 +466,12 @@ with tab_dict["💬 Чат по проекту"]:
                             key=f"comment_input_{msg_idx}"
                         )
                         if st.form_submit_button("Отправить отзыв", use_container_width=True):
-                            comment_msg = f"Замечание по ответу №{msg_idx}: '{user_comment}'" if user_comment else f"Замечание по ответу №{msg_idx} (без описания)"
-                            log_event("FEEDBACK_NEGATIVE", comment_msg)
-                            st.toast("Спасибо! Отклик сохранен и передан администраторам 📝", icon="📝")
+                            comment_text = user_comment.strip() if user_comment.strip() else "Без описания"
+                            full_log_details = f"Вопрос: '{user_prompt_text}' | Комментарий: '{comment_text}'"
+                            
+                            # Фиксируем и как негативный отзыв, и как пробел в знаниях
+                            log_event("FEEDBACK_NEGATIVE", full_log_details)
+                            st.toast("Спасибо! Замечание сохранено и передан администраторам 📝", icon="📝")
                             st.session_state[f"show_dislike_form_{msg_idx}"] = False
                             st.rerun()
 
@@ -507,7 +512,7 @@ with tab_dict["💬 Чат по проекту"]:
             if not search_results or max_score < 0.35:
                 answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
                 st.session_state.messages.append({"role": "assistant", "content": answer})
-                log_event("KNOWLEDGE_GAP", f"Проект '{selected_project}' | Ненайденный вопрос: '{prompt}' (Max Score: {max_score*100:.1f}%)")
+                log_event("KNOWLEDGE_GAP", f"Вопрос без ответа: '{prompt}' (Релевантность: {max_score*100:.1f}%)")
             else:
                 context_chunks = [
                     f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
@@ -710,30 +715,46 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                 )
 
         with sub_tab_gaps:
-            st.markdown("### 🔍 Вопросы, на которые AI не нашел ответа (Knowledge Gaps)")
-            st.caption("Этот список показывает, каких документов не хватает в вашей базе знаний:")
+            st.markdown("### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)")
+            st.caption("Автоматически зафиксированные вопросы, где релевантность базы знаний была < 35%:")
             
             if not df_logs_all.empty and "action" in df_logs_all.columns:
                 df_gaps = df_logs_all[df_logs_all["action"] == "KNOWLEDGE_GAP"]
                 if df_gaps.empty:
-                    st.success("🎉 Замечательно! Все вопросы пользователей успешно находят ответы в базе данных.")
+                    st.success("🎉 Вопросов без ответа не зафиксировано.")
                 else:
                     st.dataframe(
                         df_gaps[["timestamp", "username", "ip", "details"]], 
                         use_container_width=True
                     )
             else:
-                st.info("Данные по пробелам в знаниях пока отсутствуют.")
+                st.info("Данные отсутствуют.")
 
             st.divider()
-            st.markdown("### 👍 / 👎 Отклики пользователей по ответам")
+            st.markdown("### 👎 2. Замечания и негативные отзывы пользователей")
+            st.caption("Здесь показаны комментарии пользователе с исходным вопросом и пояснениями:")
+            
             if not df_logs_all.empty and "action" in df_logs_all.columns:
-                df_fb = df_logs_all[df_logs_all["action"].isin(["FEEDBACK_POSITIVE", "FEEDBACK_NEGATIVE"])]
-                if df_fb.empty:
-                    st.info("Отзывы по ответам пока не поступали.")
+                df_neg = df_logs_all[df_logs_all["action"] == "FEEDBACK_NEGATIVE"]
+                if df_neg.empty:
+                    st.success("🎉 Замечаний от пользователей пока нет.")
                 else:
                     st.dataframe(
-                        df_fb[["timestamp", "username", "action", "details"]], 
+                        df_neg[["timestamp", "username", "ip", "details"]], 
+                        use_container_width=True
+                    )
+            else:
+                st.info("Замечания отсутствуют.")
+
+            st.divider()
+            st.markdown("### 👍 3. Положительные отклики")
+            if not df_logs_all.empty and "action" in df_logs_all.columns:
+                df_pos = df_logs_all[df_logs_all["action"] == "FEEDBACK_POSITIVE"]
+                if df_pos.empty:
+                    st.info("Положительные оценки пока не поступали.")
+                else:
+                    st.dataframe(
+                        df_pos[["timestamp", "username", "details"]], 
                         use_container_width=True
                     )
 
