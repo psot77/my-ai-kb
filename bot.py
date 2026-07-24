@@ -1,13 +1,4 @@
 import os
-import socket
-
-# 1. ПРИНУДИТЕЛЬНЫЙ IPV4 (Устраняет ошибки сети/DNS [Errno -5] на Render)
-old_getaddrinfo = socket.getaddrinfo
-def new_getaddrinfo(*args, **kwargs):
-    responses = old_getaddrinfo(*args, **kwargs)
-    return [r for r in responses if r[0] == socket.AF_INET]
-socket.getaddrinfo = new_getaddrinfo
-
 import io
 import asyncio
 import logging
@@ -18,11 +9,11 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from qdrant_client import QdrantClient
 from groq import Groq
 
-# Логирование
+# Подробное логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ УЛЬТРА-ЛЕГКОГО BOT.PY ===")
+logger.info("=== СТАРТ БОТА С ИСПРАВЛЕННЫМ HF API ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -32,16 +23,15 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Клиенты баз данных
+# Инициализация клиентов
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 def get_cloud_embedding(text: str) -> list:
-    """Получение вектора через Hugging Face API без нагрузки на память сервера"""
-    url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    """Получение вектора через корректный эндпоинт Hugging Face API"""
+    url = "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "Content-Type": "application/json"
     }
     if HF_TOKEN:
         headers["Authorization"] = f"Bearer {HF_TOKEN.strip()}"
@@ -51,24 +41,23 @@ def get_cloud_embedding(text: str) -> list:
     last_error = None
     for attempt in range(5):
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response = requests.post(url, headers=headers, json=payload, timeout=20)
             if response.status_code == 200:
                 data = response.json()
-                # Извлекаем вложенные списки [[...]]
                 while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
                     data = data[0]
                 if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
                     return [float(x) for x in data]
-                raise Exception(f"Необычный ответ от HF: {data}")
+                raise Exception(f"Неожиданный формат ответа от HF: {data}")
             elif response.status_code == 503:
-                logger.warning(f"Модель HF разогревается (503). Ждем 4 сек... (Попытка {attempt + 1}/5)")
-                time.sleep(4)
+                logger.warning(f"Модель HF разогревается (503). Повтор через 3 сек... (Попытка {attempt + 1}/5)")
+                time.sleep(3)
             else:
                 logger.warning(f"HF API статус {response.status_code}: {response.text}")
                 last_error = f"HTTP {response.status_code}: {response.text}"
                 time.sleep(2)
         except Exception as e:
-            logger.warning(f"Сетевая ошибка при запросе эмбеддинга (попытка {attempt + 1}): {e}")
+            logger.warning(f"Ошибка запроса эмбеддинга (попытка {attempt + 1}): {e}")
             last_error = str(e)
             time.sleep(2)
             
