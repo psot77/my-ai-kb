@@ -3,3 +3,4 @@ qdrant-client
 fastembed
 groq
 langchain-text-splitters
+pandas
