@@ -3,6 +3,7 @@ import time
 import hashlib
 import json
 import urllib.request
+import io
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -14,6 +15,10 @@ from qdrant_client.models import (
 )
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from groq import Groq
+
+# Импорты парсеров документов
+from pypdf import PdfReader
+from docx import Document
 
 # =====================================================================
 # 1. НАСТРОЙКИ КЛЮЧЕЙ И СТРАНИЦЫ
@@ -44,7 +49,51 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 # =====================================================================
-# 2. ФУНКЦИИ ОПРЕДЕЛЕНИЯ IP И СТРАНЫ (GeoIP)
+# 2. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ (PDF, DOCX, TXT, MD)
+# =====================================================================
+def extract_text_from_file(uploaded_file) -> str:
+    """Извлечение чистого текста из любых форматов файлов"""
+    fname = uploaded_file.name.lower()
+    try:
+        if fname.endswith(".pdf"):
+            pdf_reader = PdfReader(uploaded_file)
+            text_pages = [page.extract_text() or "" for page in pdf_reader.pages]
+            return "\n\n".join(text_pages)
+        elif fname.endswith(".docx"):
+            doc = Document(uploaded_file)
+            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            return "\n\n".join(paragraphs)
+        else:
+            # .txt, .md
+            return uploaded_file.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        st.error(f"Ошибка при чтении файла {uploaded_file.name}: {e}")
+        return ""
+
+def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
+    """Универсальное разделение текста на чанки по абзацам"""
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current_chunk = ""
+    
+    for p in paragraphs:
+        p_clean = p.strip()
+        if not p_clean:
+            continue
+        if len(current_chunk) + len(p_clean) < chunk_size:
+            current_chunk += p_clean + "\n\n"
+        else:
+            if current_chunk.strip():
+                chunks.append(current_chunk.strip())
+            current_chunk = p_clean + "\n\n"
+            
+    if current_chunk.strip():
+        chunks.append(current_chunk.strip())
+        
+    return chunks if chunks else [text]
+
+# =====================================================================
+# 3. ФУНКЦИИ ОПРЕДЕЛЕНИЯ IP И СТРАНЫ (GeoIP)
 # =====================================================================
 def get_client_ip() -> str:
     try:
@@ -73,7 +122,7 @@ def get_country_by_ip(ip: str) -> str:
     return "Неизвестно"
 
 # =====================================================================
-# 3. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
+# 4. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
 # =====================================================================
 @st.cache_resource(max_entries=1)
 def init_services():
@@ -120,7 +169,7 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 4. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+# 5. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
 # =====================================================================
 def log_event(action: str, details: str, ip: str = None, country: str = None, username: str = None, role: str = None):
     try:
@@ -199,7 +248,7 @@ def export_chat_history():
     return text
 
 # =====================================================================
-# 5. ИНИЦИАЛИЗАЦИЯ СЕССИИ И БД ПОЛЬЗОВАТЕЛЕЙ
+# 6. ИНИЦИАЛИЗАЦИЯ СЕССИИ И БД ПОЛЬЗОВАТЕЛЕЙ
 # =====================================================================
 if "users_db" not in st.session_state:
     st.session_state.users_db = {
@@ -247,14 +296,14 @@ if "projects" not in st.session_state or isinstance(st.session_state.projects, l
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Здравствуйте! Задайте любой вопрос по подключенной базе знаний."}
+        {"role": "assistant", "content": "Здравствуйте! Задайте вопрос текстом или записав голос через микрофон."}
     ]
 
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
 # =====================================================================
-# 6. ЭКРАН ВХОДА В СИСТЕМУ
+# 7. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -321,7 +370,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 7. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И НАСТРОЙКАМИ
+# 8. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И НАСТРОЙКАМИ
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -418,7 +467,7 @@ with st.sidebar:
         st.rerun()
 
 # =====================================================================
-# 8. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
+# 9. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
 # =====================================================================
 st.title(f"🤖 AI Ассистент — [{selected_project}]")
 
@@ -434,18 +483,15 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ С СВЯЗКОЙ ВОПРОСА И КОММЕНТАРИЯ
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД (GROQ WHISPER API)
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             
-            # Кнопки 👍 / 👎 внутри контейнера ассистента
             if msg["role"] == "assistant" and msg_idx > 0:
                 c_fb1, c_fb2, _ = st.columns([1, 1, 10])
-                
-                # Поиск исходного вопроса пользователя (msg_idx - 1)
                 user_prompt_text = st.session_state.messages[msg_idx - 1]["content"] if msg_idx > 0 else "Вопрос не найден"
                 
                 with c_fb1:
@@ -456,7 +502,6 @@ with tab_dict["💬 Чат по проекту"]:
                     if st.button("👎", key=f"neg_{msg_idx}"):
                         st.session_state[f"show_dislike_form_{msg_idx}"] = True
 
-                # Форма комментария при дизлайке
                 if st.session_state.get(f"show_dislike_form_{msg_idx}", False):
                     with st.form(key=f"dislike_form_{msg_idx}"):
                         st.caption("📝 **Опишите, что именно не так в ответе:**")
@@ -468,14 +513,46 @@ with tab_dict["💬 Чат по проекту"]:
                         if st.form_submit_button("Отправить отзыв", use_container_width=True):
                             comment_text = user_comment.strip() if user_comment.strip() else "Без описания"
                             full_log_details = f"Вопрос: '{user_prompt_text}' | Комментарий: '{comment_text}'"
-                            
-                            # Фиксируем и как негативный отзыв, и как пробел в знаниях
                             log_event("FEEDBACK_NEGATIVE", full_log_details)
-                            st.toast("Спасибо! Замечание сохранено и передан администраторам 📝", icon="📝")
+                            st.toast("Спасибо! Замечание сохранено и передано администраторам 📝", icon="📝")
                             st.session_state[f"show_dislike_form_{msg_idx}"] = False
                             st.rerun()
 
-    if prompt := st.chat_input(f"Задайте вопрос по проекту '{selected_project}'..."):
+    # ГОЛОСОВОЙ ВВОД ВОПРОСА ЧЕРЕЗ МИКРОФОН
+    st.markdown("---")
+    c_v1, c_v2 = st.columns([2, 5])
+    with c_v1:
+        st.write("🎙️ **Задать вопрос голосом:**")
+        audio_value = st.audio_input("Запись аудио", key="voice_recorder", label_visibility="collapsed")
+    
+    prompt = None
+    
+    # Обработка записанного голоса через Groq Whisper
+    if audio_value is not None:
+        if st.session_state.get("last_processed_audio") != audio_value:
+            with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
+                try:
+                    audio_bytes = audio_value.read()
+                    transcription = groq_client.audio.transcriptions.create(
+                        file=("audio.wav", audio_bytes),
+                        model="whisper-large-v3-turbo",
+                        prompt="Запрос на русском языке по базе знаний",
+                        response_format="text"
+                    )
+                    prompt = str(transcription).strip()
+                    st.session_state["last_processed_audio"] = audio_value
+                    log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
+                    st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
+                except Exception as e:
+                    st.error(f"Ошибка распознавания голоса: {e}")
+
+    # Поле текстового ввода
+    text_prompt = st.chat_input(f"Или введите вопрос по проекту '{selected_project}'...")
+    if text_prompt:
+        prompt = text_prompt
+
+    # Единый блок обработки вопроса (текст или голос)
+    if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.spinner("Поиск ответа в базе знаний..."):
@@ -558,11 +635,11 @@ with tab_dict["💬 Чат по проекту"]:
         st.rerun()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ
+# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ (PDF, DOCX, TXT, MD)
 # ---------------------------------------------------------------------
 if "📁 Загрузка документов" in tab_dict:
     with tab_dict["📁 Загрузка документов"]:
-        st.subheader("📁 Пополнение Базы Знаний")
+        st.subheader("📁 Пополнение Базы Знаний (PDF, Word, Text, Markdown)")
         col_up1, col_up2 = st.columns([2, 1])
         
         with col_up1:
@@ -577,19 +654,36 @@ if "📁 Загрузка документов" in tab_dict:
                     st.rerun()
 
         st.divider()
-        uploaded_files = st.file_uploader("Перетащите `.md` файлы:", type=["md"], accept_multiple_files=True)
+        uploaded_files = st.file_uploader(
+            "Перетащите файлы (`.pdf`, `.docx`, `.txt`, `.md`):", 
+            type=["pdf", "docx", "txt", "md"], 
+            accept_multiple_files=True
+        )
 
-        if uploaded_files and st.button(f"🚀 Загрузить файлы в '{target_section}'", use_container_width=True):
-            headers_to_split_on = [("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")]
-            markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on, strip_headers=False)
+        if uploaded_files and st.button(f"🚀 Векторизовать и загрузить в '{target_section}'", use_container_width=True):
+            markdown_splitter = MarkdownHeaderTextSplitter(
+                headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")], 
+                strip_headers=False
+            )
 
             all_points = []
-            with st.spinner("Векторизация и отправка в облако..."):
+            with st.spinner("Извлечение текста, нарезка на чанки и векторизация..."):
                 for file in uploaded_files:
-                    file_content = file.read().decode("utf-8")
-                    chunks = markdown_splitter.split_text(file_content)
-                    texts = [c.page_content for c in chunks] if chunks else [file_content]
-                    metadatas = [c.metadata for c in chunks] if chunks else [{}]
+                    fname = file.name
+                    extracted_text = extract_text_from_file(file)
+                    
+                    if not extracted_text.strip():
+                        st.warning(f"Файл '{fname}' пуст или из него не удалось извлечь текст.")
+                        continue
+
+                    # Выбор стратегии нарезки в зависимости от формата
+                    if fname.lower().endswith(".md"):
+                        chunks_md = markdown_splitter.split_text(extracted_text)
+                        texts = [c.page_content for c in chunks_md] if chunks_md else [extracted_text]
+                        metadatas = [c.metadata for c in chunks_md] if chunks_md else [{}]
+                    else:
+                        texts = split_text_into_chunks(extracted_text)
+                        metadatas = [{}] * len(texts)
 
                     embeddings = list(embedding_model.embed(texts))
 
@@ -600,17 +694,18 @@ if "📁 Загрузка документов" in tab_dict:
                                 vector=emb.tolist(),
                                 payload={
                                     "text": texts[idx],
-                                    "source_file": file.name,
+                                    "source_file": fname,
                                     "section": target_section,
                                     **metadatas[idx]
                                 }
                             )
                         )
 
-                qdrant.upsert(collection_name=COLLECTION_NAME, points=all_points)
-                log_event("UPLOAD_FILES", f"Загружено {len(uploaded_files)} файлов в раздел '{target_section}'")
-                st.success("Документы векторизованы!")
-                st.rerun()
+                if all_points:
+                    qdrant.upsert(collection_name=COLLECTION_NAME, points=all_points)
+                    log_event("UPLOAD_FILES", f"Загружено {len(uploaded_files)} файлов ({len(all_points)} чанков) в раздел '{target_section}'")
+                    st.success(f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего {len(all_points)} чанков)!")
+                    st.rerun()
 
 # ---------------------------------------------------------------------
 # ВКЛАДКА 3: УПРАВЛЕНИЕ ФАЙЛАМИ
@@ -732,7 +827,7 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
 
             st.divider()
             st.markdown("### 👎 2. Замечания и негативные отзывы пользователей")
-            st.caption("Здесь показаны комментарии пользователе с исходным вопросом и пояснениями:")
+            st.caption("Здесь показаны комментарии пользователей с исходным вопросом и пояснениями:")
             
             if not df_logs_all.empty and "action" in df_logs_all.columns:
                 df_neg = df_logs_all[df_logs_all["action"] == "FEEDBACK_NEGATIVE"]
