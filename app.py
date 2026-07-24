@@ -1,4 +1,3 @@
-import streamlit.components.v1 as components
 import uuid
 import time
 import hashlib
@@ -27,13 +26,11 @@ COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 
 st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
-# =====================================================================
-# БЛОКИРОВКА ВСПЛЫВАЮЩИХ МОДАЛЬНЫХ ОКЕН ЧЕРЕЗ CSS
-# =====================================================================
+
+# CSS для блокировки дублирующих модалок
 st.markdown(
     """
     <style>
-    /* Скрытие модального окна Clear Caches */
     div[role="dialog"], div[data-testid="stModal"] {
         display: none !important;
         visibility: hidden !important;
@@ -43,44 +40,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-import streamlit.components.v1 as components
 
-# =====================================================================
-# БЛОКИРОВКА МОДАЛКИ "CLEAR CACHES" ПРИ Ctrl+C / Cmd+C (EN + RU раскладки)
-# =====================================================================
-components.html(
-    """
-    <script>
-    (function() {
-        try {
-            const parentWin = window.parent;
-            const parentDoc = window.parent.document;
-
-            function preventStreamlitCacheHotkey(e) {
-                // Проверяем, зажат ли Ctrl (Windows/Linux) или Cmd (macOS)
-                if (e.ctrlKey || e.metaKey) {
-                    const key = e.key ? e.key.toLowerCase() : '';
-                    // Проверяем латинскую 'c', кириллическую 'с' и физический код клавиши KeyC
-                    if (key === 'c' || key === 'с' || e.code === 'KeyC' || e.keyCode === 67) {
-                        // stopImmediatePropagation полностью глушит обработчик Streamlit,
-                        // но оставляет стандартное копирование текста браузером
-                        e.stopImmediatePropagation();
-                    }
-                }
-            }
-
-            // Перехватываем событие ДО того, как его услышит Streamlit
-            parentDoc.addEventListener('keydown', preventStreamlitCacheHotkey, true);
-            parentWin.addEventListener('keydown', preventStreamlitCacheHotkey, true);
-        } catch (err) {
-            console.error('Copy fix error:', err);
-        }
-    })();
-    </script>
-    """,
-    height=0,
-    width=0,
-)
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -88,7 +48,6 @@ def hash_password(password: str) -> str:
 # 2. ФУНКЦИИ ОПРЕДЕЛЕНИЯ IP И СТРАНЫ (GeoIP)
 # =====================================================================
 def get_client_ip() -> str:
-    """Извлечение IP-адреса пользователя из заголовков запроса Streamlit"""
     try:
         if hasattr(st, "context") and hasattr(st.context, "headers"):
             headers = st.context.headers
@@ -101,7 +60,6 @@ def get_client_ip() -> str:
     return "127.0.0.1"
 
 def get_country_by_ip(ip: str) -> str:
-    """Определение страны по IP через lightweight GeoIP API"""
     if ip in ["127.0.0.1", "localhost"] or ip.startswith("192.168.") or ip.startswith("10."):
         return "Локальная сеть / Dev"
     try:
@@ -163,10 +121,9 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 4. НАДЕЖНАЯ ФУНКЦИЯ ЛОГИРОВАНИЯ И ЧТЕНИЯ ЛОГОВ
+# 4. ФУНКЦИЯ ЛОГИРОВАНИЯ И ЧТЕНИЯ ЛОГОВ
 # =====================================================================
 def log_event(action: str, details: str, ip: str = None, country: str = None, username: str = None, role: str = None):
-    """Запись события аудита с абсолютной защитой от ошибок незалогиненных пользователей"""
     try:
         user_info = st.session_state.get("current_user") or {}
         
@@ -190,10 +147,9 @@ def log_event(action: str, details: str, ip: str = None, country: str = None, us
         )
         qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
     except Exception as e:
-        print(f"Ошибка сохранения лога: {e}")
+        print(f"Ошибка логирования: {e}")
 
 def get_audit_logs():
-    """Чтение логов из Qdrant с гарантированной подстановкой всех полей"""
     try:
         scroll_res, _ = qdrant.scroll(
             collection_name=LOGS_COLLECTION,
@@ -215,7 +171,6 @@ def get_audit_logs():
             })
         return sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
     except Exception as e:
-        print(f"Ошибка получения логов: {e}")
         return []
 
 def get_db_files_summary():
@@ -300,7 +255,7 @@ if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
 # =====================================================================
-# 6. ЭКРАН ВХОДА В СИСТЕМУ (ИСПРАВЛЕННОЕ ЛОГИРОВАНИЕ)
+# 6. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
@@ -323,61 +278,25 @@ if not st.session_state.logged_in:
 
                 if not user_record:
                     st.error("Неверный логин или пароль")
-                    log_event(
-                        action="LOGIN_FAILED", 
-                        details=f"Попытка входа с несуществующим логином '{clean_user}'", 
-                        ip=client_ip, 
-                        country=client_country,
-                        username=clean_user,
-                        role="guest"
-                    )
+                    log_event("LOGIN_FAILED", f"Попытка входа с несуществующим логином '{clean_user}'", client_ip, client_country, clean_user, "guest")
                 elif user_record.get("is_blocked", False):
                     st.error("❌ Ваш аккаунт заблокирован! Обратитесь к Собственнику.")
-                    log_event(
-                        action="LOGIN_BLOCKED", 
-                        details=f"Попытка входа в заблокированный аккаунт '{clean_user}'", 
-                        ip=client_ip, 
-                        country=client_country,
-                        username=clean_user,
-                        role=user_record.get("role", "guest")
-                    )
+                    log_event("LOGIN_BLOCKED", f"Попытка входа в заблокированный аккаунт '{clean_user}'", client_ip, client_country, clean_user, user_record.get("role", "guest"))
                 elif user_record.get("active_sessions", 0) >= user_record.get("max_connections", 1):
                     st.error(f"❌ Превышен лимит одновременных подключений ({user_record['max_connections']})!")
-                    log_event(
-                        action="LOGIN_LIMIT_EXCEEDED", 
-                        details=f"Превышен лимит сессий для '{clean_user}'", 
-                        ip=client_ip, 
-                        country=client_country,
-                        username=clean_user,
-                        role=user_record.get("role", "guest")
-                    )
+                    log_event("LOGIN_LIMIT_EXCEEDED", f"Превышен лимит сессий для '{clean_user}'", client_ip, client_country, clean_user, user_record.get("role", "guest"))
                 elif user_record["password"] != hash_password(pass_input):
                     user_record["failed_attempts"] = user_record.get("failed_attempts", 0) + 1
                     attempts = user_record["failed_attempts"]
                     
                     if attempts >= 3:
                         user_record["is_blocked"] = True
-                        log_event(
-                            action="AUTO_BLOCK", 
-                            details=f"Автоматическая блокировка аккаунта '{clean_user}' из-за 3 неверных попыток ввода пароля", 
-                            ip=client_ip, 
-                            country=client_country,
-                            username=clean_user,
-                            role=user_record.get("role", "guest")
-                        )
+                        log_event("AUTO_BLOCK", f"Автоматическая блокировка аккаунта '{clean_user}' после 3 ошибок", client_ip, client_country, clean_user, user_record.get("role", "guest"))
                         st.error("❌ Аккаунт заблокирован из-за 3 неверных попыток ввода пароля!")
                     else:
-                        log_event(
-                            action="LOGIN_FAILED", 
-                            details=f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", 
-                            ip=client_ip, 
-                            country=client_country,
-                            username=clean_user,
-                            role=user_record.get("role", "guest")
-                        )
+                        log_event("LOGIN_FAILED", f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)", client_ip, client_country, clean_user, user_record.get("role", "guest"))
                         st.error(f"Неверный пароль! Осталось попыток: {3 - attempts}")
                 else:
-                    # Успешная авторизация
                     user_record["failed_attempts"] = 0
                     user_record["active_sessions"] = user_record.get("active_sessions", 0) + 1
                     
@@ -389,14 +308,7 @@ if not st.session_state.logged_in:
                         "ip": client_ip,
                         "country": client_country
                     }
-                    log_event(
-                        action="LOGIN_SUCCESS", 
-                        details=f"Успешный вход пользователя '{user_record['name']}'", 
-                        ip=client_ip, 
-                        country=client_country,
-                        username=clean_user,
-                        role=user_record["role"]
-                    )
+                    log_event("LOGIN_SUCCESS", f"Успешный вход пользователя '{user_record['name']}'", client_ip, client_country, clean_user, user_record["role"])
                     st.success("Успешная авторизация!")
                     st.rerun()
 
@@ -523,11 +435,23 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ
+# ВКЛАДКА 1: ЧАТ И ОЦЕНКА ОТВЕТОВ (👍/👎 + KNOWLEDGE GAP)
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
-    for msg in st.session_state.messages:
+    for msg_idx, msg in enumerate(st.session_state.messages):
         st.chat_message(msg["role"]).write(msg["content"])
+        
+        # Для ответов ассистента выводим кнопки обратной связи 👍 / 👎
+        if msg["role"] == "assistant" and msg_idx > 0:
+            c_fb1, c_fb2, c_fb3 = st.columns([1, 1, 10])
+            with c_fb1:
+                if st.button("👍", key=f"pos_{msg_idx}"):
+                    log_event("FEEDBACK_POSITIVE", f"Отличный ответ на запрос №{msg_idx//2}")
+                    st.toast("Спасибо за положительную оценку! 👍", icon="✅")
+            with c_fb2:
+                if st.button("👎", key=f"neg_{msg_idx}"):
+                    log_event("FEEDBACK_NEGATIVE", f"Замечание по ответу №{msg_idx//2}")
+                    st.toast("Спасибо! Мы передали отклик администраторам 🛠️", icon="📝")
 
     if prompt := st.chat_input(f"Задайте вопрос по проекту '{selected_project}'..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -564,10 +488,16 @@ with tab_dict["💬 Чат по проекту"]:
 
                 t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
 
-                if not search_results:
-                    answer = "В подключенных разделах нет подходящей информации."
+                # Детекция пробела в знаниях (если ничего не найдено или совпадение слабее 35%)
+                max_score = max([hit.score for hit in search_results]) if search_results else 0.0
+
+                if not search_results or max_score < 0.35:
+                    answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
                     st.write(answer)
                     st.session_state.messages.append({"role": "assistant", "content": answer})
+                    
+                    # Фиксация KNOWLEDGE_GAP в журнал логов
+                    log_event("KNOWLEDGE_GAP", f"Проект '{selected_project}' | Ненайденный вопрос: '{prompt}' (Max Score: {max_score*100:.1f}%)")
                 else:
                     context_chunks = [
                         f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл: {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
@@ -625,6 +555,7 @@ with tab_dict["💬 Чат по проекту"]:
                             st.write(f"**{idx}. [{src_section}] {src_file}** — `{score_pct}%`")
 
                     st.session_state.messages.append({"role": "assistant", "content": answer})
+                    st.rerun()
 
 # ---------------------------------------------------------------------
 # ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ
@@ -758,26 +689,62 @@ if "📈 Аналитика" in tab_dict:
             st.line_chart(df_m.set_index("Запрос №")[["Время ответа (сек)"]])
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ & БЕЗОПАСНОСТЬ (Только Owner)
+# ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ, ПРОБЕЛЫ В ЗНАНИЯХ & БЕЗОПАСНОСТЬ
 # ---------------------------------------------------------------------
 if "📋 Журнал логов & Безопасность" in tab_dict:
     with tab_dict["📋 Журнал логов & Безопасность"]:
-        st.subheader("👑 Безопасность и Аудит (Панель Собственника)")
+        st.subheader("👑 Безопасность и Аналитика Качества")
         
-        sub_tab_logs, sub_tab_users = st.tabs(["📜 Полный Журнал Логов (GeoIP)", "👥 Управление Учётными Записями и Блокировками"])
+        sub_tab_logs, sub_tab_gaps, sub_tab_users = st.tabs([
+            "📜 Полный Журнал Логов (GeoIP)", 
+            "💡 Пробелы в знаниях & Отзывы", 
+            "👥 Управление Аккаунтами"
+        ])
         
+        logs_data = get_audit_logs()
+        df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
+
+        # 1. ЖУРНАЛ АУДИТА
         with sub_tab_logs:
-            st.write("История всех попыток входа и действий сохраняется в Qdrant Cloud:")
-            logs_data = get_audit_logs()
-            if not logs_data:
+            st.write("История всех действий фиксируется в Qdrant Cloud:")
+            if df_logs_all.empty:
                 st.info("Журнал аудита пуст.")
             else:
-                df_logs = pd.DataFrame(logs_data)
                 st.dataframe(
-                    df_logs[["timestamp", "username", "role", "ip", "country", "action", "details"]], 
+                    df_logs_all[["timestamp", "username", "role", "ip", "country", "action", "details"]], 
                     use_container_width=True
                 )
 
+        # 2. ПРОБЕЛЫ В ЗНАНИЯХ И ОЦЕНКИ
+        with sub_tab_gaps:
+            st.markdown("### 🔍 Вопросы, на которые AI не нашел ответа (Knowledge Gaps)")
+            st.caption("Этот список показывает, каких именно документов и инструкций недостает в вашей базе знаний:")
+            
+            if not df_logs_all.empty and "action" in df_logs_all.columns:
+                df_gaps = df_logs_all[df_logs_all["action"] == "KNOWLEDGE_GAP"]
+                if df_gaps.empty:
+                    st.success("🎉 Замечательно! Все вопросы пользователей успешно находят ответы в базе данных.")
+                else:
+                    st.dataframe(
+                        df_gaps[["timestamp", "username", "ip", "details"]], 
+                        use_container_width=True
+                    )
+            else:
+                st.info("Данные по пробелам в знаниях пока отсутствуют.")
+
+            st.divider()
+            st.markdown("### 👍 / 👎 Отклики пользователей по ответам")
+            if not df_logs_all.empty and "action" in df_logs_all.columns:
+                df_fb = df_logs_all[df_logs_all["action"].isin(["FEEDBACK_POSITIVE", "FEEDBACK_NEGATIVE"])]
+                if df_fb.empty:
+                    st.info("Отзывы по ответам пока не поступали.")
+                else:
+                    st.dataframe(
+                        df_fb[["timestamp", "username", "action", "details"]], 
+                        use_container_width=True
+                    )
+
+        # 3. УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ
         with sub_tab_users:
             st.markdown("### 👥 Список зарегистрированных пользователей")
             
@@ -813,7 +780,7 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                         if u_info.get("failed_attempts", 0) > 0:
                             if st.button("🔄 Сбросить счетчик ошибок", key=f"rst_{login_key}"):
                                 u_info["failed_attempts"] = 0
-                                st.success("Ошибки сбросованы!")
+                                st.success("Ошибки сброшены!")
                                 st.rerun()
 
                     new_max_conn = st.number_input(
