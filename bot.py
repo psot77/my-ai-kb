@@ -2,8 +2,7 @@ import os
 import io
 import asyncio
 import logging
-import json
-import urllib.request
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from qdrant_client import QdrantClient
@@ -13,7 +12,7 @@ from groq import Groq
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("=== СТАРТ ЛЕГКОГО BOT.PY ===")
+logger.info("=== СТАРТ BOT.PY (ОБЛАЧНЫЕ ЭМБЕДДИНГИ ЧЕРЕЗ REQUESTS) ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -22,22 +21,31 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Облачные клиенты
+# Инициализация облачных клиентов
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 def get_cloud_embedding(text: str) -> list:
-    """Получение векторного представления через HuggingFace API (потребляет 0 МБ RAM сервера)"""
+    """Получение вектора через надежный HTTP-запрос к HuggingFace API"""
     url = "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    headers = {"Content-Type": "application/json"}
-    payload = json.dumps({"inputs": text, "options": {"wait_for_model": True}}).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+    payload = {"inputs": text, "options": {"wait_for_model": True}}
     
-    req = urllib.request.Request(url, data=payload, headers=headers)
-    with urllib.request.urlopen(req, timeout=12) as response:
-        res = json.loads(response.read().decode("utf-8"))
-        if isinstance(res, list):
-            return res if isinstance(res[0], float) else res[0]
-        raise Exception(f"Неожиданный ответ HF API: {res}")
+    response = requests.post(url, headers=headers, json=payload, timeout=15)
+    if response.status_code != 200:
+        logger.error(f"Ошибка HF API ({response.status_code}): {response.text}")
+        response.raise_for_status()
+        
+    res = response.json()
+    if isinstance(res, list):
+        return res if isinstance(res[0], float) else res[0]
+    elif isinstance(res, dict) and "error" in res:
+        raise Exception(f"HF Error: {res['error']}")
+    else:
+        raise Exception(f"Неожиданный формат ответа: {res}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
@@ -48,9 +56,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def search_rag_answer(query_text: str) -> str:
     try:
-        # Получаем вектор текста через облако (без нагрузки на память)
+        # 1. Получаем эмбеддинг через облако
         query_vector = get_cloud_embedding(query_text)
         
+        # 2. Поиск в Qdrant
         response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
@@ -68,6 +77,7 @@ def search_rag_answer(query_text: str) -> str:
         ]
         context = "\n\n---\n\n".join(context_chunks)
 
+        # 3. Запрос к Groq LLM
         llm_prompt = f"""Ты — вежливый виртуальный ассистент корпоративной базы знаний.
 Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
 
@@ -142,5 +152,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Легкий Telegram-бот успешно запущен!")
+    logger.info("🤖 УСПЕХ: Telegram-бот успешно запущен!")
     app.run_polling()
