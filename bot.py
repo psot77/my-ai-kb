@@ -18,7 +18,17 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# 1. DNS-OVER-HTTPS (DoH)
+# 1. КОНСТАНТЫ И ПАРАМЕТРЫ ИНДЕКСАЦИИ
+# =====================================================================
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 100
+EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+VECTOR_DIM = 384
+QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
+COLLECTION_NAME = "knowledge_base"
+
+# =====================================================================
+# 2. DNS-OVER-HTTPS (DoH)
 # =====================================================================
 DNS_CACHE = {}
 
@@ -54,7 +64,7 @@ def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 socket.getaddrinfo = custom_getaddrinfo
 
 # =====================================================================
-# 2. НАСТРОЙКИ КЛИЕНТОВ
+# 3. НАСТРОЙКИ КЛИЕНТОВ
 # =====================================================================
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -63,7 +73,7 @@ from qdrant_client.models import PointStruct
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С ПОЛНЫМ ПАРСИНГОМ ТАБЛИЦ DOCX) ===")
+logger.info("=== СТАРТ BOT.PY (С ДЕТАЛИЗАЦИЕЙ ЗАГРУЗКИ) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
     val = os.getenv(var_name, fallback)
@@ -76,14 +86,11 @@ GROQ_API_KEY = clean_env("GROQ_API_KEY")
 QDRANT_API_KEY = clean_env("QDRANT_API_KEY")
 HF_TOKEN = clean_env("HF_TOKEN")
 
-QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
-COLLECTION_NAME = "knowledge_base"
-
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # =====================================================================
-# 3. ВЕКТОРИЗАЦИЯ И ИЗВЛЕЧЕНИЕ ТЕКСТА
+# 4. ВЕКТОРИЗАЦИЯ И ИЗВЛЕЧЕНИЕ ТЕКСТА
 # =====================================================================
 def get_cloud_embedding(text: str) -> list:
     client = InferenceClient(token=HF_TOKEN)
@@ -92,7 +99,7 @@ def get_cloud_embedding(text: str) -> list:
         try:
             result = client.feature_extraction(
                 text,
-                model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                model=EMBEDDING_MODEL
             )
             data = result.tolist() if hasattr(result, "tolist") else result
             while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
@@ -106,16 +113,14 @@ def get_cloud_embedding(text: str) -> list:
     raise Exception(f"Ошибка вектора: {last_error}")
 
 def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
-    """Извлекает текст ИЗ АБЗАЦЕВ И ИЗ ТАБЛИЦ файла Word"""
+    """Извлекает текст из абзацев и таблиц файла Word"""
     doc_obj = docx.Document(io.BytesIO(file_bytes))
     full_text = []
 
-    # 1. Чтение обычного текста
     for p in doc_obj.paragraphs:
         if p.text.strip():
             full_text.append(p.text.strip())
 
-    # 2. Чтение всех таблиц (где лежат цены и спецификации)
     for table in doc_obj.tables:
         for row in table.rows:
             row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
@@ -124,7 +129,7 @@ def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
 
     return "\n".join(full_text)
 
-def split_text_into_chunks(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
+def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
     if not text:
         return []
     chunks = []
@@ -143,12 +148,12 @@ def split_text_into_chunks(text: str, chunk_size: int = 500, overlap: int = 100)
     return [c for c in chunks if len(c) > 20]
 
 # =====================================================================
-# 4. ОБРАБОТЧИКИ TELEGRAM
+# 5. ОБРАБОТЧИКИ TELEGRAM
 # =====================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Здравствуйте! Я ваш виртуальный корпоративный ассистент.\n\n"
-        "📄 Вы можете отправить мне файл (.docx, .pdf, .txt), и я добавлю его в базу знаний!\n"
+        "📄 Отправьте мне файл (.docx, .pdf, .txt), и я добавлю его в базу знаний!\n"
         "💬 Или просто задайте мне любой вопрос."
     )
 
@@ -227,15 +232,28 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"⚠️ Ошибка при обработке аудио: {e}")
 
 async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик документов с подробной визуализацией параметров загрузки"""
     doc = update.message.document
     file_name = doc.file_name
+    file_size_kb = round(doc.file_size / 1024, 1)
     ext = os.path.splitext(file_name)[1].lower()
 
     if ext not in [".docx", ".pdf", ".txt"]:
         await update.message.reply_text("⚠️ Поддерживаются только форматы `.docx`, `.pdf` и `.txt`", parse_mode="Markdown")
         return
 
-    msg = await update.message.reply_text(f"⏳ Идет обработка и индексация файла `{file_name}`...", parse_mode="Markdown")
+    start_time = time.time()
+
+    # Стартовое сообщение с параметрами
+    msg = await update.message.reply_text(
+        f"⚙️ **Запуск индексации файла...**\n\n"
+        f"📁 **Файл:** `{file_name}` ({file_size_kb} KB)\n"
+        f"⚙️ **Настройки чанкинга:** `{CHUNK_SIZE}` симв. / перекрытие `{CHUNK_OVERLAP}`\n"
+        f"🧠 **Модель:** `{EMBEDDING_MODEL.split('/')[-1]}` ({VECTOR_DIM} dim)\n"
+        f"🗄️ **Коллекция:** `{COLLECTION_NAME}`\n\n"
+        f"⏳ *Идет чтение файла и генерация векторов...*",
+        parse_mode="Markdown"
+    )
 
     try:
         telegram_file = await context.bot.get_file(doc.file_id)
@@ -271,15 +289,24 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
                     }
                 )
             )
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
 
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
 
+        elapsed_time = round(time.time() - start_time, 2)
+
+        # Финальное подробное сообщение
         await msg.edit_text(
-            f"✅ **Файл успешно добавлен в базу знаний!**\n\n"
-            f"📄 Имя файла: `{file_name}`\n"
-            f"🧩 Создано фрагментов (включая таблицы): `{len(chunks)}`\n\n"
-            f"Теперь задайте вопрос по стоимости или подписке!",
+            f"✅ **Данные успешно проиндексированы и загружены!**\n\n"
+            f"📊 **Статистика и параметры загрузки:**\n"
+            f"• **Файл:** `{file_name}`\n"
+            f"• **Размер:** `{file_size_kb} KB` (`{ext.upper()}`)\n"
+            f"• **Сгенерировано чанков:** `{len(chunks)}` шт.\n"
+            f"• **Размер чанка:** `{CHUNK_SIZE}` символов (перекрытие `{CHUNK_OVERLAP}`)\n"
+            f"• **Векторная модель:** `{EMBEDDING_MODEL.split('/')[-1]}` (`{VECTOR_DIM}` dim)\n"
+            f"• **Хранилище:** Qdrant Cloud (`{COLLECTION_NAME}`)\n"
+            f"• **Время обработки:** `{elapsed_time} сек`\n\n"
+            f"💡 *Теперь можете задавать вопросы по содержанию этого документа!*",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -287,7 +314,7 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
         await msg.edit_text(f"⚠️ Ошибка при индексации файла: {e}")
 
 # =====================================================================
-# 5. ЗАПУСК
+# 6. ЗАПУСК
 # =====================================================================
 if __name__ == '__main__':
     if not TELEGRAM_BOT_TOKEN:
