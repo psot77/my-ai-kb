@@ -71,11 +71,11 @@ socket.getaddrinfo = custom_getaddrinfo
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, FieldCondition, MatchValue
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С СОХРАНЕНИЕМ АНАЛИТИКИ В QDRANT) ===")
+logger.info("=== СТАРТ BOT.PY (С АДМИН-КОМАНДАМИ /stats, /files, /delete) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
     val = os.getenv(var_name, fallback)
@@ -91,7 +91,7 @@ HF_TOKEN = clean_env("HF_TOKEN")
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Автоматическое создание коллекции для аналитики
+# Автоматическая проверка / создание коллекции аналитики
 try:
     cols = [c.name for c in qdrant.get_collections().collections]
     if ANALYTICS_COLLECTION not in cols:
@@ -112,13 +112,13 @@ def log_analytics(source: str, user_id: str, username: str, event_type: str, que
         now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         point = PointStruct(
             id=str(uuid.uuid4()),
-            vector=[0.0],  # Пустой вектор для служебных записей
+            vector=[0.0],
             payload={
                 "timestamp": now_str,
-                "source": source,          # 'Telegram' или 'Web'
+                "source": source,
                 "user_id": str(user_id),
                 "username": username or "Аноним",
-                "event_type": event_type,   # 'Текстовый запрос', 'Голосовой запрос', 'Загрузка файла'
+                "event_type": event_type,
                 "query": query[:300],
                 "score": float(score),
                 "found_in_kb": bool(score >= 0.20),
@@ -188,14 +188,155 @@ def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int
     return [c for c in chunks if len(c) > 20]
 
 # =====================================================================
-# 6. ОБРАБОТЧИКИ TELEGRAM
+# 6. КОМАНДЫ И ОБРАБОТЧИКИ TELEGRAM
 # =====================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Здравствуйте! Я ваш виртуальный корпоративный ассистент.\n\n"
-        "📄 Отправьте мне файл (.docx, .pdf, .txt), и я добавлю его в базу знаний!\n"
-        "💬 Или просто задайте мне любой вопрос."
+        "👋 **Здравствуйте! Я ваш виртуальный корпоративный ассистент.**\n\n"
+        "📄 Отправьте мне файл (`.docx`, `.pdf`, `.txt`), и я добавлю его в базу знаний!\n"
+        "💬 Или просто задайте мне любой вопрос по документам.\n\n"
+        "🛠️ **Доступные команды:**\n"
+        "• `/stats` — Общая статистика и метрики\n"
+        "• `/files` — Список файлов в базе знаний\n"
+        "• `/delete имя_файла.docx` — Удалить файл из базы",
+        parse_mode="Markdown"
     )
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /stats: выводит сводную аналитику"""
+    try:
+        kb_count_res = qdrant.count(collection_name=COLLECTION_NAME)
+        total_chunks = kb_count_res.count
+
+        analytics_res, _ = qdrant.scroll(
+            collection_name=ANALYTICS_COLLECTION,
+            limit=1000,
+            with_payload=True,
+            with_vectors=False
+        )
+
+        total_requests = len(analytics_res) if analytics_res else 0
+        tg_requests = 0
+        web_requests = 0
+        successful_requests = 0
+
+        if analytics_res:
+            for pt in analytics_res:
+                p = pt.payload or {}
+                if p.get("source") == "Telegram":
+                    tg_requests += 1
+                elif p.get("source") == "Web":
+                    web_requests += 1
+                if p.get("found_in_kb"):
+                    successful_requests += 1
+
+        success_rate = round((successful_requests / total_requests) * 100, 1) if total_requests > 0 else 0.0
+
+        msg_text = (
+            f"📊 **СТАТИСТИКА AI АССИСТЕНТА**\n\n"
+            f"🧠 **База знаний Qdrant:**\n"
+            f"• Всего чанков в базе: `{total_chunks}` шт.\n\n"
+            f"📈 **Аналитика обращений:**\n"
+            f"• Всего запросов: `{total_requests}`\n"
+            f"• Из Telegram 📱: `{tg_requests}`\n"
+            f"• Из Веб-панели 🌐: `{web_requests}`\n"
+            f"• Успешность ответов (RAG): `{success_rate}%`\n"
+        )
+        await update.message.reply_text(msg_text, parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка команды /stats: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Ошибка получения статистики: {e}")
+
+async def files_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /files: выводит список файлов и кол-во чанков"""
+    try:
+        scroll_res, _ = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            limit=10000,
+            with_payload=["source_file"],
+            with_vectors=False
+        )
+
+        files_summary = {}
+        for pt in scroll_res:
+            p = pt.payload or {}
+            src = p.get("source_file", "Неизвестный файл")
+            files_summary[src] = files_summary.get(src, 0) + 1
+
+        if not files_summary:
+            await update.message.reply_text("📂 В базе знаний пока нет загруженных файлов.")
+            return
+
+        lines = ["📂 **Список файлов в базе знаний:**\n"]
+        for idx, (fname, count) in enumerate(files_summary.items(), start=1):
+            lines.append(f"{idx}. `{fname}` — *{count} чанков*")
+
+        lines.append("\n💡 *Чтобы удалить файл из базы знаний, используйте команду:*")
+        lines.append("`/delete точное_имя_файла.docx`")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Ошибка команды /files: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Ошибка получения списка файлов: {e}")
+
+async def delete_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /delete: удаляет файл из Qdrant по имени"""
+    user = update.effective_user
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ **Укажите имя файла для удаления.**\n\n"
+            "Пример: `/delete КОМЕРЦІЙНА ПРОПОЗИЦІЯ.docx`\n\n"
+            "📋 Посмотреть список всех файлов можно по команде `/files`",
+            parse_mode="Markdown"
+        )
+        return
+
+    target_filename = " ".join(context.args).strip()
+
+    try:
+        pts, _ = qdrant.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=Filter(
+                must=[FieldCondition(key="source_file", match=MatchValue(value=target_filename))]
+            ),
+            limit=10000,
+            with_payload=False,
+            with_vectors=False
+        )
+
+        p_ids = [p.id for p in pts]
+
+        if not p_ids:
+            await update.message.reply_text(
+                f"❌ Файл `{target_filename}` не найден в базе знаний.\n\nПроверьте точное имя файла с помощью команды `/files`",
+                parse_mode="Markdown"
+            )
+            return
+
+        # Удаление записей из Qdrant
+        qdrant.delete(collection_name=COLLECTION_NAME, points_selector=p_ids)
+
+        # Логирование удаления
+        log_analytics(
+            source="Telegram",
+            user_id=user.id,
+            username=user.username or user.first_name,
+            event_type="Удаление файла",
+            query=f"Удаление: {target_filename}",
+            score=1.0,
+            status="Удалено",
+            details=f"Удалено чанков: {len(p_ids)}"
+        )
+
+        await update.message.reply_text(
+            f"✅ **Файл успешно удален из базы знаний!**\n\n"
+            f"📄 Имя файла: `{target_filename}`\n"
+            f"🗑️ Удалено чанков из Qdrant: `{len(p_ids)}`",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при удалении файла: {e}", exc_info=True)
+        await update.message.reply_text(f"⚠️ Ошибка при удалении файла: {e}")
 
 def search_rag_answer(query_text: str, user_info: dict) -> str:
     try:
@@ -208,7 +349,6 @@ def search_rag_answer(query_text: str, user_info: dict) -> str:
         search_results = response.points
         max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-        # Сохранение аналитики поиска
         log_analytics(
             source="Telegram",
             user_id=user_info.get("id"),
@@ -360,7 +500,6 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
         elapsed_time = round(time.time() - start_time, 2)
 
-        # Сохранение аналитики загрузки документа
         log_analytics(
             source="Telegram",
             user_id=user.id,
@@ -386,7 +525,7 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
         await msg.edit_text(f"⚠️ Ошибка при индексации файла: {e}")
 
 # =====================================================================
-# 7. ЗАПУСК
+# 7. ЗАПУСК БОТА И РЕГИСТРАЦИЯ ХЕНДЛЕРОВ
 # =====================================================================
 if __name__ == '__main__':
     if not TELEGRAM_BOT_TOKEN:
@@ -394,10 +533,17 @@ if __name__ == '__main__':
         exit(1)
         
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Команды
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("files", files_list))
+    app.add_handler(CommandHandler("delete", delete_file))
+    
+    # Сообщения
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Бот запущен!")
+    logger.info("🤖 УСПЕХ: Бот запущен со всеми командами!")
     app.run_polling(drop_pending_updates=True)
