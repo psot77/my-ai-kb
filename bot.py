@@ -6,14 +6,19 @@ import logging
 import io
 import asyncio
 import time
+import uuid
 import requests
 
-# Подробное логирование
+# Чтение PDF и DOCX прямо в боте
+import pypdf
+import docx
+
+# Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# 1. АВТОМАТИЧЕСКИЙ DNS-OVER-HTTPS (DoH) ДЛЯ ОБХОДА СБОЕВ DNS НА RENDER
+# 1. DNS-OVER-HTTPS (DoH)ДЛЯ ОБХОДА СБОЕВ DNS НА RENDER
 # =====================================================================
 DNS_CACHE = {}
 
@@ -30,10 +35,9 @@ def resolve_via_google_doh(hostname: str) -> str:
                     if ans.get("type") == 1:
                         ip = ans.get("data")
                         DNS_CACHE[hostname] = ip
-                        logger.info(f"🌐 DoH успешно распознал {hostname} -> {ip}")
                         return ip
     except Exception as e:
-        logger.warning(f"Не удалось распознать {hostname} через DoH: {e}")
+        logger.warning(f"DoH error: {e}")
     return None
 
 old_getaddrinfo = socket.getaddrinfo
@@ -50,18 +54,18 @@ def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 socket.getaddrinfo = custom_getaddrinfo
 
 # =====================================================================
-# 2. НАСТРОЙКИ КЛИЕНТОВ И ПЕРЕМЕННЫХ С АВТООЧИСТКОЙ КЛЮЧЕЙ
+# 2. НАСТРОЙКИ КЛИЕНТОВ
 # =====================================================================
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from qdrant_client import QdrantClient
+from qdrant_client.models import PointStruct
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С АВТООЧИСТКОЙ КЛЮЧЕЙ) ===")
+logger.info("=== СТАРТ BOT.PY (С ПОДДЕРЖКОЙ ЗАГРУЗКИ ФАЙЛОВ) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
-    """Зачищает переменную окружения от кавычек и пробелов"""
     val = os.getenv(var_name, fallback)
     if val:
         val = val.strip().strip("'").strip('"')
@@ -75,16 +79,14 @@ HF_TOKEN = clean_env("HF_TOKEN")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Инициализация клиентов
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # =====================================================================
-# 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ
+# 3. ВЕКТОРИЗАЦИЯ И НАРЕЗКА ЧАНКОВ
 # =====================================================================
 def get_cloud_embedding(text: str) -> list:
     client = InferenceClient(token=HF_TOKEN)
-
     last_error = None
     for attempt in range(3):
         try:
@@ -92,38 +94,48 @@ def get_cloud_embedding(text: str) -> list:
                 text,
                 model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
-
             data = result.tolist() if hasattr(result, "tolist") else result
-
             while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
                 data = data[0]
-
             if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
                 return [float(x) for x in data]
-
-            raise Exception(f"Неожиданный формат ответа от HF: {data}")
-
+            raise Exception(f"Неожиданный формат HF: {data}")
         except Exception as e:
             last_error = str(e)
-            logger.warning(f"Попытка {attempt + 1}/3 не удалась: {last_error}")
             time.sleep(2)
+    raise Exception(f"Ошибка вектора: {last_error}")
 
-    raise Exception(f"Ошибка получения вектора: {last_error}")
+def split_text_into_chunks(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
+    if not text:
+        return []
+    chunks = []
+    start = 0
+    text_len = len(text)
+    while start < text_len:
+        end = start + chunk_size
+        chunk = text[start:end]
+        if end < text_len and not text[end].isspace():
+            last_space = chunk.rfind(' ')
+            if last_space != -1:
+                end = start + last_space
+                chunk = text[start:end]
+        chunks.append(chunk.strip())
+        start += (chunk_size - overlap)
+    return [c for c in chunks if len(c) > 30]
 
 # =====================================================================
-# 4. ОБРАБОТЧИКИ СООБЩЕНИЙ TELEGRAM
+# 4. ОБРАБОТЧИКИ TELEGRAM
 # =====================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"Команда /start от: @{update.effective_user.username or update.effective_user.id}")
     await update.message.reply_text(
         "👋 Здравствуйте! Я ваш виртуальный корпоративный ассистент.\n\n"
-        "Задайте мне любой вопрос текстом или отправьте голосовое сообщение!"
+        "📄 Вы можете отправить мне файл (.docx, .pdf, .txt), и я добавлю его в базу знаний!\n"
+        "💬 Или просто задайте мне любой вопрос."
     )
 
 def search_rag_answer(query_text: str) -> str:
     try:
         query_vector = get_cloud_embedding(query_text)
-        
         response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
@@ -132,7 +144,7 @@ def search_rag_answer(query_text: str) -> str:
         search_results = response.points
         max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-        if not search_results or max_score < 0.35:
+        if not search_results or max_score < 0.25:
             return "К сожалению, в корпоративной базе знаний пока нет подробных инструкций по этому вопросу."
 
         context_chunks = [
@@ -165,24 +177,18 @@ def search_rag_answer(query_text: str) -> str:
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_text = update.message.text
-        logger.info(f"Вопрос из Telegram: '{user_text}'")
         await update.message.reply_chat_action("typing")
-        
         loop = asyncio.get_running_loop()
         answer = await loop.run_in_executor(None, search_rag_answer, user_text)
         await update.message.reply_text(answer)
     except Exception as e:
-        logger.error(f"Ошибка обработки текста: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
 
 async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        logger.info("Обработка голосового сообщения...")
         await update.message.reply_chat_action("typing")
-        
         voice_file = await context.bot.get_file(update.message.voice.file_id)
         voice_bytes = await voice_file.download_as_bytearray()
-        
         audio_io = io.BytesIO(voice_bytes)
         audio_io.name = "voice.ogg"
 
@@ -193,25 +199,89 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             response_format="text"
         )
         prompt_text = str(transcription).strip()
-        logger.info(f"Голос распознан: '{prompt_text}'")
-        
         await update.message.reply_text(f"🎙️ *Распознано:* `{prompt_text}`", parse_mode="Markdown")
         
         loop = asyncio.get_running_loop()
         answer = await loop.run_in_executor(None, search_rag_answer, prompt_text)
         await update.message.reply_text(answer)
     except Exception as e:
-        logger.error(f"Ошибка голосового ввода: {e}", exc_info=True)
         await update.message.reply_text(f"⚠️ Ошибка при обработке аудио: {e}")
 
+async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик присланных документов (.docx, .pdf, .txt)"""
+    doc = update.message.document
+    file_name = doc.file_name
+    ext = os.path.splitext(file_name)[1].lower()
+
+    if ext not in [".docx", ".pdf", ".txt"]:
+        await update.message.reply_text("⚠️ Поддерживаются только форматы `.docx`, `.pdf` и `.txt`", parse_mode="Markdown")
+        return
+
+    msg = await update.message.reply_text(f"⏳ Идет обработка и индексация файла `{file_name}`...", parse_mode="Markdown")
+
+    try:
+        telegram_file = await context.bot.get_file(doc.file_id)
+        file_bytes = await telegram_file.download_as_bytearray()
+        
+        extracted_text = ""
+        if ext == ".txt":
+            extracted_text = file_bytes.decode("utf-8", errors="ignore")
+        elif ext == ".docx":
+            doc_obj = docx.Document(io.BytesIO(file_bytes))
+            paragraphs = [p.text for p in doc_obj.paragraphs if p.text.strip()]
+            extracted_text = "\n".join(paragraphs)
+        elif ext == ".pdf":
+            reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+            pages = [page.extract_text() for page in reader.pages if page.extract_text()]
+            extracted_text = "\n".join(pages)
+
+        if not extracted_text.strip():
+            await msg.edit_text(f"⚠️ Не удалось извлечь текст из файла `{file_name}`.")
+            return
+
+        chunks = split_text_into_chunks(extracted_text)
+        
+        points = []
+        for idx, chunk in enumerate(chunks):
+            vector = get_cloud_embedding(chunk)
+            points.append(
+                PointStruct(
+                    id=str(uuid.uuid4()),
+                    vector=vector,
+                    payload={
+                        "text": chunk,
+                        "source_file": file_name,
+                        "chunk_index": idx
+                    }
+                )
+            )
+            await asyncio.sleep(0.05)
+
+        # Сохранение в Qdrant
+        qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
+
+        await msg.edit_text(
+            f"✅ **Файл успешно добавлен в базу знаний!**\n\n"
+            f"📄 Имя файла: `{file_name}`\n"
+            f"🧩 Создано фрагментов: `{len(chunks)}`\n\n"
+            f"Теперь вы можете задавать вопросы по содержанию этого документа!",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка загрузки файла: {e}", exc_info=True)
+        await msg.edit_text(f"⚠️ Ошибка при индексации файла: {e}")
+
+# =====================================================================
+# 5. ЗАПУСК
+# =====================================================================
 if __name__ == '__main__':
     if not TELEGRAM_BOT_TOKEN:
-        logger.critical("КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не задан!")
+        logger.critical("TELEGRAM_BOT_TOKEN не задан!")
         exit(1)
         
-    logger.info("Запуск слушателя Telegram...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
