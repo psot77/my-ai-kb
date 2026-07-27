@@ -77,40 +77,38 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # =====================================================================
 # 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ ЧЕРЕЗ HUGGING FACE ROUTER API
 # =====================================================================
+from huggingface_hub import InferenceClient
+
+# Создаём клиента ОДИН РАЗ на уровне модуля (не внутри функции!)
+_hf_client = InferenceClient(token=HF_TOKEN.strip()) if HF_TOKEN else InferenceClient()
+
+
 def get_cloud_embedding(text: str) -> list:
-    urls = [
-        "https://router.huggingface.co/hf-inference/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        "https://api-inference.huggingface.co/models/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-    ]
-    
-    headers = {"Content-Type": "application/json"}
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN.strip()}"
-        
-    payload = {"inputs": text, "options": {"wait_for_model": True}}
-    
     last_error = None
-    for url in urls:
-        for attempt in range(3):
-            try:
-                response = requests.post(url, headers=headers, json=payload, timeout=20)
-                if response.status_code == 200:
-                    data = response.json()
-                    while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
-                        data = data[0]
-                    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
-                        return [float(x) for x in data]
-                    raise Exception(f"Формат ответа от HF: {data}")
-                elif response.status_code == 503:
-                    logger.warning(f"Модель разогревается (503). Пауза 3 сек... (Попытка {attempt + 1}/3)")
-                    time.sleep(3)
-                else:
-                    last_error = f"HTTP {response.status_code}: {response.text}"
-                    time.sleep(1)
-            except Exception as e:
-                last_error = str(e)
-                time.sleep(1)
-                
+    for attempt in range(3):
+        try:
+            result = _hf_client.feature_extraction(
+                text,
+                model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            )
+
+            # numpy array -> обычный список
+            data = result.tolist() if hasattr(result, "tolist") else result
+
+            # разворачиваем вложенные списки, как у вас было раньше
+            while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
+                data = data[0]
+
+            if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
+                return [float(x) for x in data]
+
+            raise Exception(f"Формат ответа от HF: {data}")
+
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(f"Попытка {attempt + 1}/3 не удалась: {last_error}")
+            time.sleep(3)
+
     raise Exception(f"Ошибка получения вектора: {last_error}")
 
 # =====================================================================
