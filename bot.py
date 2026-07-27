@@ -9,7 +9,7 @@ import time
 import uuid
 import requests
 
-# Чтение PDF и DOCX прямо в боте
+# Чтение PDF и DOCX
 import pypdf
 import docx
 
@@ -18,7 +18,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# 1. DNS-OVER-HTTPS (DoH)ДЛЯ ОБХОДА СБОЕВ DNS НА RENDER
+# 1. DNS-OVER-HTTPS (DoH)
 # =====================================================================
 DNS_CACHE = {}
 
@@ -63,7 +63,7 @@ from qdrant_client.models import PointStruct
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С ПОДДЕРЖКОЙ ЗАГРУЗКИ ФАЙЛОВ) ===")
+logger.info("=== СТАРТ BOT.PY (С ПОЛНЫМ ПАРСИНГОМ ТАБЛИЦ DOCX) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
     val = os.getenv(var_name, fallback)
@@ -83,7 +83,7 @@ qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=Tr
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # =====================================================================
-# 3. ВЕКТОРИЗАЦИЯ И НАРЕЗКА ЧАНКОВ
+# 3. ВЕКТОРИЗАЦИЯ И ИЗВЛЕЧЕНИЕ ТЕКСТА
 # =====================================================================
 def get_cloud_embedding(text: str) -> list:
     client = InferenceClient(token=HF_TOKEN)
@@ -105,6 +105,25 @@ def get_cloud_embedding(text: str) -> list:
             time.sleep(2)
     raise Exception(f"Ошибка вектора: {last_error}")
 
+def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
+    """Извлекает текст ИЗ АБЗАЦЕВ И ИЗ ТАБЛИЦ файла Word"""
+    doc_obj = docx.Document(io.BytesIO(file_bytes))
+    full_text = []
+
+    # 1. Чтение обычного текста
+    for p in doc_obj.paragraphs:
+        if p.text.strip():
+            full_text.append(p.text.strip())
+
+    # 2. Чтение всех таблиц (где лежат цены и спецификации)
+    for table in doc_obj.tables:
+        for row in table.rows:
+            row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if row_text:
+                full_text.append(" | ".join(row_text))
+
+    return "\n".join(full_text)
+
 def split_text_into_chunks(text: str, chunk_size: int = 500, overlap: int = 100) -> list[str]:
     if not text:
         return []
@@ -121,7 +140,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 500, overlap: int = 100)
                 chunk = text[start:end]
         chunks.append(chunk.strip())
         start += (chunk_size - overlap)
-    return [c for c in chunks if len(c) > 30]
+    return [c for c in chunks if len(c) > 20]
 
 # =====================================================================
 # 4. ОБРАБОТЧИКИ TELEGRAM
@@ -139,12 +158,12 @@ def search_rag_answer(query_text: str) -> str:
         response = qdrant.query_points(
             collection_name=COLLECTION_NAME,
             query=query_vector,
-            limit=3
+            limit=5
         )
         search_results = response.points
         max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-        if not search_results or max_score < 0.25:
+        if not search_results or max_score < 0.20:
             return "К сожалению, в корпоративной базе знаний пока нет подробных инструкций по этому вопросу."
 
         context_chunks = [
@@ -208,7 +227,6 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"⚠️ Ошибка при обработке аудио: {e}")
 
 async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик присланных документов (.docx, .pdf, .txt)"""
     doc = update.message.document
     file_name = doc.file_name
     ext = os.path.splitext(file_name)[1].lower()
@@ -227,9 +245,7 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
         if ext == ".txt":
             extracted_text = file_bytes.decode("utf-8", errors="ignore")
         elif ext == ".docx":
-            doc_obj = docx.Document(io.BytesIO(file_bytes))
-            paragraphs = [p.text for p in doc_obj.paragraphs if p.text.strip()]
-            extracted_text = "\n".join(paragraphs)
+            extracted_text = extract_text_from_docx_bytes(file_bytes)
         elif ext == ".pdf":
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
             pages = [page.extract_text() for page in reader.pages if page.extract_text()]
@@ -257,14 +273,13 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
             )
             await asyncio.sleep(0.05)
 
-        # Сохранение в Qdrant
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
 
         await msg.edit_text(
             f"✅ **Файл успешно добавлен в базу знаний!**\n\n"
             f"📄 Имя файла: `{file_name}`\n"
-            f"🧩 Создано фрагментов: `{len(chunks)}`\n\n"
-            f"Теперь вы можете задавать вопросы по содержанию этого документа!",
+            f"🧩 Создано фрагментов (включая таблицы): `{len(chunks)}`\n\n"
+            f"Теперь задайте вопрос по стоимости или подписке!",
             parse_mode="Markdown"
         )
     except Exception as e:
