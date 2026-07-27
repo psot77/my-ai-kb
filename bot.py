@@ -59,9 +59,8 @@ from qdrant_client import QdrantClient
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (INFERENCE CLIENT + DOH) ===")
+logger.info("=== СТАРТ BOT.PY (ГАРАНТИРОВАННЫЙ INFERENCE CLIENT) ===")
 
-# Токен берется из переменных Render, а если там пусто — используется ваш новый токен
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8901191309:AAF4UuKO5RIZX7_Z2mj7PKp7K-chKZJdvE8")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
@@ -70,14 +69,22 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
+# Безопасная инициализация клиентов
+qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
+groq_client = Groq(api_key=GROQ_API_KEY)
+
 # =====================================================================
 # 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ
 # =====================================================================
 def get_cloud_embedding(text: str) -> list:
+    # Клиент создается прямо внутри функции — 100% защита от NameError
+    hf_token_clean = HF_TOKEN.strip() if HF_TOKEN else None
+    client = InferenceClient(token=hf_token_clean)
+
     last_error = None
     for attempt in range(3):
         try:
-            result = _hf_client.feature_extraction(
+            result = client.feature_extraction(
                 text,
                 model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
@@ -207,5 +214,4 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
     logger.info("🤖 УСПЕХ: Бот запущен!")
-    # drop_pending_updates=True сбрасывает старые подсоединения и устраняет ошибку 409 Conflict
     app.run_polling(drop_pending_updates=True)
