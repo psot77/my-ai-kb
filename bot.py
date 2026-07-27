@@ -61,20 +61,14 @@ from huggingface_hub import InferenceClient
 
 logger.info("=== СТАРТ BOT.PY (INFERENCE CLIENT + DOH) ===")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Токен берется из переменных Render, а если там пусто — используется ваш новый токен
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8901191309:AAF4UuKO5RIZX7_Z2mj7PKp7K-chKZJdvE8")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
-
-# Безопасная инициализация клиентов
-qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-hf_token_clean = HF_TOKEN.strip() if HF_TOKEN else None
-_hf_client = InferenceClient(token=hf_token_clean)
 
 # =====================================================================
 # 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ
