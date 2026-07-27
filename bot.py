@@ -13,7 +13,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # =====================================================================
-# 1. АВТОМАТИЧЕСКИЙ DNS-OVER-HTTPS (DoH) ДЛЯ ОБХОДА СБОЕВ Dns НА RENDER
+# 1. АВТОМАТИЧЕСКИЙ DNS-OVER-HTTPS (DoH) ДЛЯ ОБХОДА СБОЕВ DNS НА RENDER
 # =====================================================================
 DNS_CACHE = {}
 
@@ -41,10 +41,8 @@ old_getaddrinfo = socket.getaddrinfo
 
 def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     try:
-        # Пробуем стандартное системное разрешение по IPv4
         return old_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
     except socket.gaierror:
-        # Если системный DNS Render выбил ошибку, запрашиваем Google DoH напрямую по IP
         ip = resolve_via_google_doh(host)
         if ip:
             return old_getaddrinfo(ip, port, socket.AF_INET, type, proto, flags)
@@ -59,8 +57,9 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from qdrant_client import QdrantClient
 from groq import Groq
+from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С АВТО-DNS ОБХОДОМ) ===")
+logger.info("=== СТАРТ BOT.PY (INFERENCE CLIENT + DOH) ===")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -70,19 +69,16 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Инициализация облачных сервисов
+# Безопасная инициализация клиентов
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+hf_token_clean = HF_TOKEN.strip() if HF_TOKEN else None
+_hf_client = InferenceClient(token=hf_token_clean)
+
 # =====================================================================
-# 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ ЧЕРЕЗ HUGGING FACE ROUTER API
+# 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ
 # =====================================================================
-from huggingface_hub import InferenceClient
-
-# Создаём клиента ОДИН РАЗ на уровне модуля (не внутри функции!)
-_hf_client = InferenceClient(token=HF_TOKEN.strip()) if HF_TOKEN else InferenceClient()
-
-
 def get_cloud_embedding(text: str) -> list:
     last_error = None
     for attempt in range(3):
@@ -92,22 +88,22 @@ def get_cloud_embedding(text: str) -> list:
                 model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
 
-            # numpy array -> обычный список
+            # Конвертация numpy array -> обычный список
             data = result.tolist() if hasattr(result, "tolist") else result
 
-            # разворачиваем вложенные списки, как у вас было раньше
+            # Разворачиваем вложенные списки [[...]]
             while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
                 data = data[0]
 
             if isinstance(data, list) and len(data) > 0 and isinstance(data[0], (int, float)):
                 return [float(x) for x in data]
 
-            raise Exception(f"Формат ответа от HF: {data}")
+            raise Exception(f"Неожиданный формат ответа от HF: {data}")
 
         except Exception as e:
             last_error = str(e)
             logger.warning(f"Попытка {attempt + 1}/3 не удалась: {last_error}")
-            time.sleep(3)
+            time.sleep(2)
 
     raise Exception(f"Ошибка получения вектора: {last_error}")
 
@@ -217,4 +213,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
     logger.info("🤖 УСПЕХ: Бот запущен!")
-    app.run_polling()
+    # drop_pending_updates=True сбрасывает старые подсоединения и устраняет ошибку 409 Conflict
+    app.run_polling(drop_pending_updates=True)
