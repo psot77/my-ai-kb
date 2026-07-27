@@ -32,7 +32,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 # 1. НАСТРОЙКИ КЛЮЧЕЙ, СТРАНИЦЫ И ТАЙМ-АУТА
 # =====================================================================
 # Очищаем ключ от возможных лишних пробелов и кавычек
-GROQ_API_KEY = st.secrets["GROQ_API_KEY"].strip().strip("'").strip('"')
+GROQ_API_KEY = str(st.secrets.get("GROQ_API_KEY", "")).strip().strip("'").strip('"')
 QDRANT_API_KEY = st.secrets["QDRANT_API_KEY"]
 
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
