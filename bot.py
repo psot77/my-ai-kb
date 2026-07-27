@@ -66,7 +66,7 @@ def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 socket.getaddrinfo = custom_getaddrinfo
 
 # =====================================================================
-# 3. НАСТРОЙКИ КЛИЕНТОВ
+# 3. НАСТРОЙКИ КЛИЕНТОВ И АДМИНОВ
 # =====================================================================
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -75,7 +75,7 @@ from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, Fi
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С АДМИН-КОМАНДАМИ /stats, /files, /delete) ===")
+logger.info("=== СТАРТ BOT.PY (С ОГРАНИЧЕНИЕМ ДОСТУПА ПО TELEGRAM ID) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
     val = os.getenv(var_name, fallback)
@@ -88,8 +88,19 @@ GROQ_API_KEY = clean_env("GROQ_API_KEY")
 QDRANT_API_KEY = clean_env("QDRANT_API_KEY")
 HF_TOKEN = clean_env("HF_TOKEN")
 
+# Чтение списка Telegram ID администраторов через запятую (например: "12345678,98765432")
+ADMIN_IDS_RAW = clean_env("ADMIN_IDS", "")
+ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
+
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+# Проверка, является ли пользователь администратором
+def is_admin(user_id: int) -> bool:
+    if not ADMIN_IDS:
+        # Если переменная ADMIN_IDS пустая, доступ открыт всем (чтобы случайно не заблокировать собственника)
+        return True
+    return user_id in ADMIN_IDS
 
 # Автоматическая проверка / создание коллекции аналитики
 try:
@@ -107,7 +118,6 @@ except Exception as e:
 # 4. ФУНКЦИЯ ЗАПИСИ АНАЛИТИКИ
 # =====================================================================
 def log_analytics(source: str, user_id: str, username: str, event_type: str, query: str = "", score: float = 0.0, status: str = "Success", details: str = ""):
-    """Безопасная запись аналитического события в Qdrant"""
     try:
         now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         point = PointStruct(
@@ -193,17 +203,35 @@ def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 **Здравствуйте! Я ваш виртуальный корпоративный ассистент.**\n\n"
-        "📄 Отправьте мне файл (`.docx`, `.pdf`, `.txt`), и я добавлю его в базу знаний!\n"
-        "💬 Или просто задайте мне любой вопрос по документам.\n\n"
-        "🛠️ **Доступные команды:**\n"
-        "• `/stats` — Общая статистика и метрики\n"
-        "• `/files` — Список файлов в базе знаний\n"
+        "💬 Вы можете задать мне любой вопрос по базе знаний.\n\n"
+        "🛠️ **Полезные команды:**\n"
+        "• `/id` — Узнать ваш цифровой Telegram ID\n"
+        "• `/stats` — Статистика обращения к базе\n"
+        "• `/files` — Список документов в базе\n"
         "• `/delete имя_файла.docx` — Удалить файл из базы",
         parse_mode="Markdown"
     )
 
+async def get_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /id: возвращает пользователю его Telegram ID"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or update.effective_user.first_name
+    admin_status = "👑 Администратор" if is_admin(user_id) else "👤 Пользователь"
+    
+    await update.message.reply_text(
+        f"🆔 **Ваши данные:**\n"
+        f"• Telegram ID: `{user_id}`\n"
+        f"• Пользователь: @{username}\n"
+        f"• Статус в боте: **{admin_status}**",
+        parse_mode="Markdown"
+    )
+
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /stats: выводит сводную аналитику"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ **У вас нет прав для просмотра статистики.**", parse_mode="Markdown")
+        return
+
     try:
         kb_count_res = qdrant.count(collection_name=COLLECTION_NAME)
         total_chunks = kb_count_res.count
@@ -248,7 +276,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Ошибка получения статистики: {e}")
 
 async def files_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /files: выводит список файлов и кол-во чанков"""
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("⛔ **У вас нет прав для просмотра списка файлов.**", parse_mode="Markdown")
+        return
+
     try:
         scroll_res, _ = qdrant.scroll(
             collection_name=COLLECTION_NAME,
@@ -280,8 +312,11 @@ async def files_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"⚠️ Ошибка получения списка файлов: {e}")
 
 async def delete_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /delete: удаляет файл из Qdrant по имени"""
     user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ **У вас нет прав для удаления файлов.**", parse_mode="Markdown")
+        return
+
     if not context.args:
         await update.message.reply_text(
             "⚠️ **Укажите имя файла для удаления.**\n\n"
@@ -313,10 +348,8 @@ async def delete_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Удаление записей из Qdrant
         qdrant.delete(collection_name=COLLECTION_NAME, points_selector=p_ids)
 
-        # Логирование удаления
         log_analytics(
             source="Telegram",
             user_id=user.id,
@@ -442,11 +475,15 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"⚠️ Ошибка при обработке аудио: {e}")
 
 async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not is_admin(user.id):
+        await update.message.reply_text("⛔ **У вас нет прав для добавления документов в базу знаний.**", parse_mode="Markdown")
+        return
+
     doc = update.message.document
     file_name = doc.file_name
     file_size_kb = round(doc.file_size / 1024, 1)
     ext = os.path.splitext(file_name)[1].lower()
-    user = update.effective_user
 
     if ext not in [".docx", ".pdf", ".txt"]:
         await update.message.reply_text("⚠️ Поддерживаются только форматы `.docx`, `.pdf` и `.txt`", parse_mode="Markdown")
@@ -536,6 +573,7 @@ if __name__ == '__main__':
     
     # Команды
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("id", get_my_id))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("files", files_list))
     app.add_handler(CommandHandler("delete", delete_file))
@@ -545,5 +583,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Бот запущен со всеми командами!")
+    logger.info("🤖 УСПЕХ: Бот запущен с контролем доступа!")
     app.run_polling(drop_pending_updates=True)
