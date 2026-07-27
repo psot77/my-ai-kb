@@ -277,10 +277,10 @@ def log_analytics(source: str, user_id: str, username: str, event_type: str, que
             vector=[0.0] * 384,
             payload={
                 "timestamp": now_str,
-                "source": source,          # 'Telegram' или 'Web'
+                "source": source,
                 "user_id": str(user_id),
                 "username": username or "Аноним",
-                "event_type": event_type,   # 'Текстовый запрос', 'Голосовой запрос', 'Загрузка документа'
+                "event_type": event_type,
                 "query": query[:300],
                 "score": float(score),
                 "found_in_kb": bool(score >= 0.20),
@@ -589,7 +589,6 @@ with st.sidebar:
         use_container_width=True
     )
 
-    # Генератор PDF-файла
     pdf_bytes = generate_pdf_report(selected_project, st.session_state.get("messages", []))
     st.download_button(
         label="📄 Скачать отчет (.pdf)",
@@ -688,7 +687,6 @@ with tab_dict["💬 Чат по проекту"]:
                 st.session_state.voice_key_counter += 1
                 log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
                 
-                # Лог в аналитику
                 log_analytics("Web", user_data.get("username"), user_data.get("name"), "Голосовой запрос", prompt)
                 st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
             except Exception as e:
@@ -732,7 +730,6 @@ with tab_dict["💬 Чат по проекту"]:
             t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
             max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-            # Запись лога в общую аналитику Qdrant
             log_analytics(
                 source="Web",
                 user_id=user_data.get("username"),
@@ -770,21 +767,12 @@ with tab_dict["💬 Чат по проекту"]:
 {prompt}
 
 --- ОТВЕТ ---"""
-Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
-
---- ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ ---
-{context}
-
---- ВОПРОС ПОЛЬЗОВАТЕЛЯ ---
-{prompt}
-
---- ОТВЕТ ---"""
 
                 t_llm_start = time.perf_counter()
                 res = groq_client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     messages=[{"role": "user", "content": llm_prompt}],
-                    temperature=0.2
+                    temperature=0.1
                 )
                 t_llm = time.perf_counter() - t_llm_start
                 t_total = time.perf_counter() - t_start
@@ -875,8 +863,6 @@ if "📁 Загрузка документов" in tab_dict:
                 if all_points:
                     qdrant.upsert(collection_name=COLLECTION_NAME, points=all_points)
                     log_event("UPLOAD_FILES", f"Загружено {len(uploaded_files)} файлов ({len(all_points)} чанков) в раздел '{target_section}'")
-                    
-                    # Лог в аналитику
                     log_analytics("Web", user_data.get("username"), user_data.get("name"), "Загрузка документа", f"Файлов: {len(uploaded_files)}", score=1.0, status="Загружено")
                     
                     st.success(f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего {len(all_points)} чанков)!")
@@ -949,7 +935,6 @@ if "📈 Аналитика" in tab_dict:
                 st.rerun()
 
         try:
-            # Чтение записей из Qdrant коллекции analytics_logs
             scroll_res, _ = qdrant.scroll(
                 collection_name=ANALYTICS_COLLECTION,
                 limit=1000,
@@ -968,7 +953,6 @@ if "📈 Аналитика" in tab_dict:
                 success_count = len(df_a[df_a['found_in_kb'] == True]) if 'found_in_kb' in df_a.columns else 0
                 success_pct = round((success_count / total_q) * 100, 1) if total_q > 0 else 0
 
-                # Метрики
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("Всего обращений", total_q)
                 m2.metric("Из Telegram 📱", tg_q)
@@ -1016,7 +1000,6 @@ if "📈 Аналитика" in tab_dict:
         except Exception as e:
             st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
 
-        # Дополнительно: Токены текущей сессии
         if st.session_state.metrics_history:
             st.divider()
             st.markdown("### ⚡ Метрики скорости и токенов текущей веб-сессии")
@@ -1188,3 +1171,4 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                         log_event("CREATE_USER", f"Создан аккаунт '{login_clean}' (Роль: {u_role}, Лимит сессий: {u_max_c})")
                         st.success(f"Аккаунт '{login_clean}' успешно создан!")
                         st.rerun()
+                        
