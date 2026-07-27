@@ -18,7 +18,6 @@ logger = logging.getLogger(__name__)
 DNS_CACHE = {}
 
 def resolve_via_google_doh(hostname: str) -> str:
-    """Прямое получение IP-адреса через Google DNS (8.8.8.8) без участия DNS Render"""
     if hostname in DNS_CACHE:
         return DNS_CACHE[hostname]
     try:
@@ -28,7 +27,7 @@ def resolve_via_google_doh(hostname: str) -> str:
             data = json.loads(response.read().decode())
             if data.get("Status") == 0 and "Answer" in data:
                 for ans in data["Answer"]:
-                    if ans.get("type") == 1:  # Запись A (IPv4)
+                    if ans.get("type") == 1:
                         ip = ans.get("data")
                         DNS_CACHE[hostname] = ip
                         logger.info(f"🌐 DoH успешно распознал {hostname} -> {ip}")
@@ -51,7 +50,7 @@ def custom_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 socket.getaddrinfo = custom_getaddrinfo
 
 # =====================================================================
-# 2. НАСТРОЙКИ КЛИЕНТОВ И ПЕРЕМЕННЫХ
+# 2. НАСТРОЙКИ КЛИЕНТОВ И ПЕРЕМЕННЫХ С АВТООЧИСТКОЙ КЛЮЧЕЙ
 # =====================================================================
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
@@ -59,17 +58,24 @@ from qdrant_client import QdrantClient
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (ГАРАНТИРОВАННЫЙ INFERENCE CLIENT) ===")
+logger.info("=== СТАРТ BOT.PY (С АВТООЧИСТКОЙ КЛЮЧЕЙ) ===")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8901191309:AAF4UuKO5RIZX7_Z2mj7PKp7K-chKZJdvE8")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
-HF_TOKEN = os.getenv("HF_TOKEN")
+def clean_env(var_name: str, fallback: str = None) -> str:
+    """Зачищает переменную окружения от кавычек и пробелов"""
+    val = os.getenv(var_name, fallback)
+    if val:
+        val = val.strip().strip("'").strip('"')
+    return val
+
+TELEGRAM_BOT_TOKEN = clean_env("TELEGRAM_BOT_TOKEN", "8901191309:AAF4UuKO5RIZX7_Z2mj7PKp7K-chKZJdvE8")
+GROQ_API_KEY = clean_env("GROQ_API_KEY")
+QDRANT_API_KEY = clean_env("QDRANT_API_KEY")
+HF_TOKEN = clean_env("HF_TOKEN")
 
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 
-# Безопасная инициализация клиентов
+# Инициализация клиентов
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -77,9 +83,7 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # 3. ПОЛУЧЕНИЕ ЭМБЕДДИНГОВ
 # =====================================================================
 def get_cloud_embedding(text: str) -> list:
-    # Клиент создается прямо внутри функции — 100% защита от NameError
-    hf_token_clean = HF_TOKEN.strip() if HF_TOKEN else None
-    client = InferenceClient(token=hf_token_clean)
+    client = InferenceClient(token=HF_TOKEN)
 
     last_error = None
     for attempt in range(3):
@@ -89,10 +93,8 @@ def get_cloud_embedding(text: str) -> list:
                 model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
             )
 
-            # Конвертация numpy array -> обычный список
             data = result.tolist() if hasattr(result, "tolist") else result
 
-            # Разворачиваем вложенные списки [[...]]
             while isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
                 data = data[0]
 
