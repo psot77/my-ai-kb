@@ -38,6 +38,7 @@ QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud
 COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 ANALYTICS_COLLECTION = "analytics_logs"
+CONFIG_COLLECTION = "system_config"
 
 SESSION_TIMEOUT_MINUTES = 15
 
@@ -63,7 +64,6 @@ def hash_password(password: str) -> str:
 # 2. ФУНКЦИИ ГЕНЕРАЦИИ PDF-ОТЧЕТОВ
 # =====================================================================
 def generate_pdf_report(project_name: str, messages: list) -> bytes:
-    """Формирование PDF отчета по истории диалога с поддержкой кириллицы"""
     font_path = "DejaVuSans.ttf"
     if not os.path.exists(font_path):
         try:
@@ -215,6 +215,12 @@ def init_services():
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
 
+    if CONFIG_COLLECTION not in collections:
+        qdrant.create_collection(
+            collection_name=CONFIG_COLLECTION,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+        )
+
     for field in ["section", "project", "source_file"]:
         try:
             qdrant.create_payload_index(
@@ -236,8 +242,34 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 6. ФУНКЦИИ ЛОГИРОВАНИЯ И ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ
+# 6. ФУНКЦИИ ЛОГИРОВАНИЯ И КОНФИГУРАЦИИ
 # =====================================================================
+def load_system_config():
+    """Загрузка конфигурации проектов и разделов из Qdrant"""
+    try:
+        scroll_res, _ = qdrant.scroll(collection_name=CONFIG_COLLECTION, limit=5, with_payload=True)
+        for pt in scroll_res:
+            if pt.payload and "projects" in pt.payload:
+                return pt.payload.get("projects"), pt.payload.get("sections")
+    except Exception:
+        pass
+    return None, None
+
+def save_system_config(projects, sections):
+    """Сохранение конфигурации проектов и разделов в Qdrant"""
+    try:
+        point = PointStruct(
+            id="00000000-0000-0000-0000-000000000001",
+            vector=[0.0] * 384,
+            payload={
+                "projects": projects,
+                "sections": list(set(sections))
+            }
+        )
+        qdrant.upsert(collection_name=CONFIG_COLLECTION, points=[point])
+    except Exception as e:
+        print(f"Ошибка сохранения конфига: {e}")
+
 def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
         user_info = st.session_state.get("current_user") or {}
@@ -269,7 +301,6 @@ def log_event(action: str, details: str, ip: str = None, username: str = None, r
         print(f"Ошибка логирования: {e}")
 
 def log_analytics(source: str, user_id: str, username: str, event_type: str, query: str = "", score: float = 0.0, status: str = "Успешно", details: str = ""):
-    """Запись общего аналитического события в Qdrant"""
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         point = PointStruct(
@@ -382,15 +413,29 @@ if "users_db" not in st.session_state:
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-if "sections" not in st.session_state:
-    st.session_state.sections = ["Общий раздел", "Продажи и CRM", "Регламенты", "Техническая часть"]
+# Загрузка сохраняемых проектов и разделов из Qdrant Cloud
+if "projects" not in st.session_state or "sections" not in st.session_state:
+    db_projects, db_sections = load_system_config()
+    if db_projects and db_sections:
+        st.session_state.projects = db_projects
+        st.session_state.sections = db_sections
+    else:
+        st.session_state.sections = ["Общий раздел", "Продажи и CRM", "Регламенты", "Техническая часть"]
+        st.session_state.projects = {
+            "Общий проект": ["Общий раздел"],
+            "Отдел продаж": ["Продажи и CRM", "Общий раздел"],
+            "IT и Разработка": ["Техническая часть", "Регламенты"]
+        }
+        save_system_config(st.session_state.projects, st.session_state.sections)
 
-if "projects" not in st.session_state or isinstance(st.session_state.projects, list):
-    st.session_state.projects = {
-        "Общий проект": ["Общий раздел"],
-        "Отдел продаж": ["Продажи и CRM", "Общий раздел"],
-        "IT и Разработка": ["Техническая часть", "Регламенты"]
-    }
+# Автоматическое добавление разделов из файлов в базе знаний
+try:
+    existing_files_summary = get_db_files_summary()
+    for sec_key in existing_files_summary.keys():
+        if sec_key and sec_key not in st.session_state.sections:
+            st.session_state.sections.append(sec_key)
+except Exception:
+    pass
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -498,7 +543,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 10. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И ЭКСПОРТОМ (MD + PDF)
+# 10. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И ЭКСПОРТОМ
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -537,15 +582,17 @@ with st.sidebar:
 
     if user_role in ["admin", "owner"]:
         with st.expander("➕ Создать проект"):
-            new_proj_name = st.text_input("Имя проекта:")
+            new_proj_name = st.text_input("Имя проекта:", key="input_new_proj_name")
             chosen_sections = st.multiselect(
                 "Разделы:",
                 options=st.session_state.sections,
-                default=[st.session_state.sections[0]] if st.session_state.sections else []
+                default=[st.session_state.sections[0]] if st.session_state.sections else [],
+                key="ms_create_project"
             )
             if st.button("Сохранить проект", use_container_width=True):
                 if new_proj_name and new_proj_name not in st.session_state.projects:
                     st.session_state.projects[new_proj_name] = chosen_sections
+                    save_system_config(st.session_state.projects, st.session_state.sections)
                     log_event("CREATE_PROJECT", f"Создан проект '{new_proj_name}': {chosen_sections}")
                     st.success(f"Проект '{new_proj_name}' создан!")
                     st.rerun()
@@ -554,10 +601,12 @@ with st.sidebar:
             updated_sections = st.multiselect(
                 f"Разделы для '{selected_project}':",
                 options=st.session_state.sections,
-                default=active_sections
+                default=active_sections,
+                key=f"ms_edit_project_{selected_project}"
             )
             if st.button("Обновить привязку", use_container_width=True):
                 st.session_state.projects[selected_project] = updated_sections
+                save_system_config(st.session_state.projects, st.session_state.sections)
                 log_event("EDIT_PROJECT", f"Обновлены разделы проекта '{selected_project}': {updated_sections}")
                 st.success("Обновлено!")
                 st.rerun()
@@ -657,7 +706,6 @@ with tab_dict["💬 Чат по проекту"]:
                             st.session_state[f"show_dislike_form_{msg_idx}"] = False
                             st.rerun()
 
-    # ГОЛОСОВОЙ ВВОД ВОПРОСА ЧЕРЕЗ МИКРОФОН
     st.markdown("---")
     c_v1, c_v2 = st.columns([2, 5])
     with c_v1:
@@ -809,6 +857,7 @@ if "📁 Загрузка документов" in tab_dict:
             if st.button("Добавить раздел", use_container_width=True):
                 if new_sec_input and new_sec_input not in st.session_state.sections:
                     st.session_state.sections.append(new_sec_input)
+                    save_system_config(st.session_state.projects, st.session_state.sections)
                     log_event("CREATE_SECTION", f"Создан раздел '{new_sec_input}'")
                     st.success(f"Раздел '{new_sec_input}' создан!")
                     st.rerun()
@@ -923,7 +972,7 @@ if "🗂️ Управление файлами" in tab_dict:
                         st.divider()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 4: АНАЛИТИКА (ОБЪЕДИНЕННАЯ ИЗ QDRANT)
+# ВКЛАДКА 4: АНАЛИТИКА
 # ---------------------------------------------------------------------
 if "📈 Аналитика" in tab_dict:
     with tab_dict["📈 Аналитика"]:
@@ -1171,4 +1220,3 @@ if "📋 Журнал логов & Безопасность" in tab_dict:
                         log_event("CREATE_USER", f"Создан аккаунт '{login_clean}' (Роль: {u_role}, Лимит сессий: {u_max_c})")
                         st.success(f"Аккаунт '{login_clean}' успешно создан!")
                         st.rerun()
-                        
