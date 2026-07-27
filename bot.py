@@ -7,6 +7,7 @@ import io
 import asyncio
 import time
 import uuid
+import datetime
 import requests
 
 # Чтение PDF и DOCX
@@ -26,6 +27,7 @@ EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 VECTOR_DIM = 384
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
+ANALYTICS_COLLECTION = "analytics_logs"
 
 # =====================================================================
 # 2. DNS-OVER-HTTPS (DoH)
@@ -69,11 +71,11 @@ socket.getaddrinfo = custom_getaddrinfo
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, VectorParams, Distance
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С ДЕТАЛИЗАЦИЕЙ ЗАГРУЗКИ) ===")
+logger.info("=== СТАРТ BOT.PY (С СОХРАНЕНИЕМ АНАЛИТИКИ В QDRANT) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
     val = os.getenv(var_name, fallback)
@@ -89,8 +91,47 @@ HF_TOKEN = clean_env("HF_TOKEN")
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# Автоматическое создание коллекции для аналитики
+try:
+    cols = [c.name for c in qdrant.get_collections().collections]
+    if ANALYTICS_COLLECTION not in cols:
+        qdrant.create_collection(
+            collection_name=ANALYTICS_COLLECTION,
+            vectors_config=VectorParams(size=1, distance=Distance.COSINE)
+        )
+        logger.info(f"Создана коллекция аналитики '{ANALYTICS_COLLECTION}'")
+except Exception as e:
+    logger.warning(f"Ошибка проверки коллекции аналитики: {e}")
+
 # =====================================================================
-# 4. ВЕКТОРИЗАЦИЯ И ИЗВЛЕЧЕНИЕ ТЕКСТА
+# 4. ФУНКЦИЯ ЗАПИСИ АНАЛИТИКИ
+# =====================================================================
+def log_analytics(source: str, user_id: str, username: str, event_type: str, query: str = "", score: float = 0.0, status: str = "Success", details: str = ""):
+    """Безопасная запись аналитического события в Qdrant"""
+    try:
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        point = PointStruct(
+            id=str(uuid.uuid4()),
+            vector=[0.0],  # Пустой вектор для служебных записей
+            payload={
+                "timestamp": now_str,
+                "source": source,          # 'Telegram' или 'Web'
+                "user_id": str(user_id),
+                "username": username or "Аноним",
+                "event_type": event_type,   # 'Текстовый запрос', 'Голосовой запрос', 'Загрузка файла'
+                "query": query[:300],
+                "score": float(score),
+                "found_in_kb": bool(score >= 0.20),
+                "status": status,
+                "details": details
+            }
+        )
+        qdrant.upsert(collection_name=ANALYTICS_COLLECTION, points=[point])
+    except Exception as e:
+        logger.error(f"Ошибка записи аналитики в Qdrant: {e}")
+
+# =====================================================================
+# 5. ВЕКТОРИЗАЦИЯ И ИЗВЛЕЧЕНИЕ ТЕКСТА
 # =====================================================================
 def get_cloud_embedding(text: str) -> list:
     client = InferenceClient(token=HF_TOKEN)
@@ -113,7 +154,6 @@ def get_cloud_embedding(text: str) -> list:
     raise Exception(f"Ошибка вектора: {last_error}")
 
 def extract_text_from_docx_bytes(file_bytes: bytes) -> str:
-    """Извлекает текст из абзацев и таблиц файла Word"""
     doc_obj = docx.Document(io.BytesIO(file_bytes))
     full_text = []
 
@@ -148,7 +188,7 @@ def split_text_into_chunks(text: str, chunk_size: int = CHUNK_SIZE, overlap: int
     return [c for c in chunks if len(c) > 20]
 
 # =====================================================================
-# 5. ОБРАБОТЧИКИ TELEGRAM
+# 6. ОБРАБОТЧИКИ TELEGRAM
 # =====================================================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -157,7 +197,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💬 Или просто задайте мне любой вопрос."
     )
 
-def search_rag_answer(query_text: str) -> str:
+def search_rag_answer(query_text: str, user_info: dict) -> str:
     try:
         query_vector = get_cloud_embedding(query_text)
         response = qdrant.query_points(
@@ -167,6 +207,17 @@ def search_rag_answer(query_text: str) -> str:
         )
         search_results = response.points
         max_score = max([hit.score for hit in search_results]) if search_results else 0.0
+
+        # Сохранение аналитики поиска
+        log_analytics(
+            source="Telegram",
+            user_id=user_info.get("id"),
+            username=user_info.get("username"),
+            event_type=user_info.get("event_type", "Текстовый запрос"),
+            query=query_text,
+            score=max_score,
+            status="Успешно" if max_score >= 0.20 else "Не найдено в БЗ"
+        )
 
         if not search_results or max_score < 0.20:
             return "К сожалению, в корпоративной базе знаний пока нет подробных инструкций по этому вопросу."
@@ -196,14 +247,28 @@ def search_rag_answer(query_text: str) -> str:
         return res.choices[0].message.content
     except Exception as e:
         logger.error(f"Ошибка RAG: {e}", exc_info=True)
+        log_analytics(
+            source="Telegram",
+            user_id=user_info.get("id"),
+            username=user_info.get("username"),
+            event_type=user_info.get("event_type", "Текстовый запрос"),
+            query=query_text,
+            status="Ошибка",
+            details=str(e)
+        )
         return f"⚠️ Произошла ошибка при поиске: {e}"
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_text = update.message.text
+        user_info = {
+            "id": update.effective_user.id,
+            "username": update.effective_user.username or update.effective_user.first_name,
+            "event_type": "Текстовый запрос"
+        }
         await update.message.reply_chat_action("typing")
         loop = asyncio.get_running_loop()
-        answer = await loop.run_in_executor(None, search_rag_answer, user_text)
+        answer = await loop.run_in_executor(None, search_rag_answer, user_text, user_info)
         await update.message.reply_text(answer)
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка: {e}")
@@ -225,18 +290,23 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         prompt_text = str(transcription).strip()
         await update.message.reply_text(f"🎙️ *Распознано:* `{prompt_text}`", parse_mode="Markdown")
         
+        user_info = {
+            "id": update.effective_user.id,
+            "username": update.effective_user.username or update.effective_user.first_name,
+            "event_type": "Голосовой запрос"
+        }
         loop = asyncio.get_running_loop()
-        answer = await loop.run_in_executor(None, search_rag_answer, prompt_text)
+        answer = await loop.run_in_executor(None, search_rag_answer, prompt_text, user_info)
         await update.message.reply_text(answer)
     except Exception as e:
         await update.message.reply_text(f"⚠️ Ошибка при обработке аудио: {e}")
 
 async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик документов с подробной визуализацией параметров загрузки"""
     doc = update.message.document
     file_name = doc.file_name
     file_size_kb = round(doc.file_size / 1024, 1)
     ext = os.path.splitext(file_name)[1].lower()
+    user = update.effective_user
 
     if ext not in [".docx", ".pdf", ".txt"]:
         await update.message.reply_text("⚠️ Поддерживаются только форматы `.docx`, `.pdf` и `.txt`", parse_mode="Markdown")
@@ -244,13 +314,9 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
 
     start_time = time.time()
 
-    # Стартовое сообщение с параметрами
     msg = await update.message.reply_text(
         f"⚙️ **Запуск индексации файла...**\n\n"
         f"📁 **Файл:** `{file_name}` ({file_size_kb} KB)\n"
-        f"⚙️ **Настройки чанкинга:** `{CHUNK_SIZE}` симв. / перекрытие `{CHUNK_OVERLAP}`\n"
-        f"🧠 **Модель:** `{EMBEDDING_MODEL.split('/')[-1]}` ({VECTOR_DIM} dim)\n"
-        f"🗄️ **Коллекция:** `{COLLECTION_NAME}`\n\n"
         f"⏳ *Идет чтение файла и генерация векторов...*",
         parse_mode="Markdown"
     )
@@ -292,19 +358,25 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
             await asyncio.sleep(0.04)
 
         qdrant.upsert(collection_name=COLLECTION_NAME, points=points)
-
         elapsed_time = round(time.time() - start_time, 2)
 
-        # Финальное подробное сообщение
+        # Сохранение аналитики загрузки документа
+        log_analytics(
+            source="Telegram",
+            user_id=user.id,
+            username=user.username or user.first_name,
+            event_type="Загрузка документа",
+            query=f"Файл: {file_name}",
+            score=1.0,
+            status="Загружено",
+            details=f"Чанков: {len(chunks)}, Время: {elapsed_time}s"
+        )
+
         await msg.edit_text(
             f"✅ **Данные успешно проиндексированы и загружены!**\n\n"
-            f"📊 **Статистика и параметры загрузки:**\n"
-            f"• **Файл:** `{file_name}`\n"
-            f"• **Размер:** `{file_size_kb} KB` (`{ext.upper()}`)\n"
+            f"📊 **Статистика:**\n"
+            f"• **Файл:** `{file_name}` (`{file_size_kb} KB`)\n"
             f"• **Сгенерировано чанков:** `{len(chunks)}` шт.\n"
-            f"• **Размер чанка:** `{CHUNK_SIZE}` символов (перекрытие `{CHUNK_OVERLAP}`)\n"
-            f"• **Векторная модель:** `{EMBEDDING_MODEL.split('/')[-1]}` (`{VECTOR_DIM}` dim)\n"
-            f"• **Хранилище:** Qdrant Cloud (`{COLLECTION_NAME}`)\n"
             f"• **Время обработки:** `{elapsed_time} сек`\n\n"
             f"💡 *Теперь можете задавать вопросы по содержанию этого документа!*",
             parse_mode="Markdown"
@@ -314,7 +386,7 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
         await msg.edit_text(f"⚠️ Ошибка при индексации файла: {e}")
 
 # =====================================================================
-# 6. ЗАПУСК
+# 7. ЗАПУСК
 # =====================================================================
 if __name__ == '__main__':
     if not TELEGRAM_BOT_TOKEN:
