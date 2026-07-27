@@ -31,9 +31,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 # =====================================================================
 # 1. НАСТРОЙКИ КЛЮЧЕЙ, СТРАНИЦЫ И ТАЙМ-АУТА
 # =====================================================================
-# Очищаем ключ от возможных лишних пробелов и кавычек
 GROQ_API_KEY = str(st.secrets.get("GROQ_API_KEY", "")).strip().strip("'").strip('"')
-QDRANT_API_KEY = st.secrets["QDRANT_API_KEY"]
+QDRANT_API_KEY = str(st.secrets.get("QDRANT_API_KEY", "")).strip().strip("'").strip('"')
 
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
@@ -213,7 +212,7 @@ def init_services():
     if ANALYTICS_COLLECTION not in collections:
         qdrant.create_collection(
             collection_name=ANALYTICS_COLLECTION,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+            vectors_config=VectorParams(size=1, distance=Distance.COSINE)
         )
 
     if CONFIG_COLLECTION not in collections:
@@ -300,11 +299,12 @@ def log_event(action: str, details: str, ip: str = None, username: str = None, r
         print(f"Ошибка логирования: {e}")
 
 def log_analytics(source: str, user_id: str, username: str, event_type: str, query: str = "", score: float = 0.0, status: str = "Успешно", details: str = ""):
+    """Безопасное сохранение лога аналитики с вектором размерности 1"""
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         point = PointStruct(
             id=uuid.uuid4().hex,
-            vector=[0.0] * 384,
+            vector=[0.0],  # Размерность 1 для совпадения с коллекции analytics_logs
             payload={
                 "timestamp": now_str,
                 "source": source,
@@ -611,7 +611,6 @@ with st.sidebar:
     st.divider()
     
     try:
-        # Подсчет общего количества чанков по всей базе
         total_chunks_res = qdrant.count(collection_name=COLLECTION_NAME)
         doc_count = total_chunks_res.count
             
@@ -749,7 +748,6 @@ with tab_dict["💬 Чат по проекту"]:
             t_qdrant_start = time.perf_counter()
             search_results = []
             
-            # 1. Сначала ищем с фильтрацией по разделам проекта
             if active_sections:
                 search_filter = Filter(
                     must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
@@ -765,7 +763,6 @@ with tab_dict["💬 Чат по проекту"]:
                 except Exception:
                     search_results = []
 
-            # 2. ФОЛЛБЭК: Если по разделам ничего не нашлось — ищем по ВСЕЙ базе Qdrant
             if not search_results:
                 try:
                     response = qdrant.query_points(
@@ -780,6 +777,7 @@ with tab_dict["💬 Чат по проекту"]:
             t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
             max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
+            # Фиксация в аналитику Qdrant
             log_analytics(
                 source="Web",
                 user_id=user_data.get("username"),
