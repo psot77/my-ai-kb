@@ -148,7 +148,7 @@ def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
     return chunks if chunks else [text]
 
 # =====================================================================
-# 4. GeoIP ФУНКЦИИ (IP, СТРАНА И КООРДИНАТЫ ДЛЯ КАРТЫ)
+# 4. GeoIP ФУНКЦИИ
 # =====================================================================
 def get_client_ip() -> str:
     try:
@@ -183,7 +183,7 @@ def get_geoip_details(ip: str) -> dict:
     return default_res
 
 # =====================================================================
-# 5. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ С ОПТИМИЗАЦИЕЙ ПАМЯТИ
+# 5. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ
 # =====================================================================
 @st.cache_resource(max_entries=1)
 def init_services():
@@ -245,7 +245,6 @@ qdrant, groq_client, embedding_model = init_services()
 # 6. ФУНКЦИИ ЛОГИРОВАНИЯ И КОНФИГУРАЦИИ
 # =====================================================================
 def load_system_config():
-    """Загрузка конфигурации проектов и разделов из Qdrant"""
     try:
         scroll_res, _ = qdrant.scroll(collection_name=CONFIG_COLLECTION, limit=5, with_payload=True)
         for pt in scroll_res:
@@ -256,7 +255,6 @@ def load_system_config():
     return None, None
 
 def save_system_config(projects, sections):
-    """Сохранение конфигурации проектов и разделов в Qdrant"""
     try:
         point = PointStruct(
             id="00000000-0000-0000-0000-000000000001",
@@ -413,7 +411,6 @@ if "users_db" not in st.session_state:
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# Загрузка сохраняемых проектов и разделов из Qdrant Cloud
 if "projects" not in st.session_state or "sections" not in st.session_state:
     db_projects, db_sections = load_system_config()
     if db_projects and db_sections:
@@ -428,7 +425,6 @@ if "projects" not in st.session_state or "sections" not in st.session_state:
         }
         save_system_config(st.session_state.projects, st.session_state.sections)
 
-# Автоматическое добавление разделов из файлов в базе знаний
 try:
     existing_files_summary = get_db_files_summary()
     for sec_key in existing_files_summary.keys():
@@ -449,7 +445,7 @@ if "voice_key_counter" not in st.session_state:
     st.session_state.voice_key_counter = 0
 
 # =====================================================================
-# 8. АВТОМАТИЧЕСКИЙ ТАЙМ-АУТ СЕССИИ ПРИ НЕАКТИВНОСТИ
+# 8. АВТОМАТИЧЕСКИЙ ТАЙМ-АУТ СЕССИИ
 # =====================================================================
 if st.session_state.logged_in:
     current_time = time.time()
@@ -614,12 +610,9 @@ with st.sidebar:
     st.divider()
     
     try:
-        if active_sections:
-            project_filter = Filter(must=[FieldCondition(key="section", match=MatchAny(any=active_sections))])
-            count_res = qdrant.count(collection_name=COLLECTION_NAME, count_filter=project_filter)
-            doc_count = count_res.count
-        else:
-            doc_count = 0
+        # Подсчет общего количества чанков по всей базе
+        total_chunks_res = qdrant.count(collection_name=COLLECTION_NAME)
+        doc_count = total_chunks_res.count
             
         col_stat1, col_stat2 = st.columns(2)
         col_stat1.metric("Чанков", doc_count)
@@ -671,7 +664,7 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД С ФОЛЛБЭК-ПОИСКОМ
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
@@ -755,6 +748,7 @@ with tab_dict["💬 Чат по проекту"]:
             t_qdrant_start = time.perf_counter()
             search_results = []
             
+            # 1. Сначала ищем с фильтрацией по разделам проекта
             if active_sections:
                 search_filter = Filter(
                     must=[FieldCondition(key="section", match=MatchAny(any=active_sections))]
@@ -764,16 +758,23 @@ with tab_dict["💬 Чат по проекту"]:
                         collection_name=COLLECTION_NAME,
                         query=query_vector,
                         query_filter=search_filter,
-                        limit=3
+                        limit=5
                     )
                     search_results = response.points
                 except Exception:
+                    search_results = []
+
+            # 2. ФОЛЛБЭК: Если по разделам ничего не нашлось — ищем по ВСЕЙ базе Qdrant
+            if not search_results:
+                try:
                     response = qdrant.query_points(
                         collection_name=COLLECTION_NAME,
                         query=query_vector,
-                        limit=3
+                        limit=5
                     )
                     search_results = response.points
+                except Exception:
+                    search_results = []
 
             t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
             max_score = max([hit.score for hit in search_results]) if search_results else 0.0
@@ -785,10 +786,10 @@ with tab_dict["💬 Чат по проекту"]:
                 event_type="Текстовый запрос",
                 query=prompt,
                 score=max_score,
-                status="Успешно" if max_score >= 0.35 else "Не найдено в БЗ"
+                status="Успешно" if max_score >= 0.20 else "Не найдено в БЗ"
             )
 
-            if not search_results or max_score < 0.35:
+            if not search_results or max_score < 0.20:
                 answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
                 st.session_state.messages.append({"role": "assistant", "content": answer})
                 log_event("KNOWLEDGE_GAP", f"Вопрос без ответа: '{prompt}' (Релевантность: {max_score*100:.1f}%)")
