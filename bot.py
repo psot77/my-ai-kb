@@ -401,8 +401,14 @@ def search_rag_answer(query_text: str, user_info: dict) -> str:
         ]
         context = "\n\n---\n\n".join(context_chunks)
 
-        llm_prompt = f"""Ты — вежливый виртуальный ассистент корпоративной базы знаний.
-Ответь на вопрос пользователя, используя ТОЛЬКО предоставленную ниже информацию.
+        llm_prompt = f"""Ты — высококвалифицированный корпоративный AI-ассистент базы знаний. 
+Твоя задача — давать точные, профессиональные и структурированные ответы.
+
+--- ПРАВИЛА И ОГРАНИЧЕНИЯ ---
+1. **Язык ответа:** Отвечай СТРОГО на том же языке, на котором написан «ВОПРОС ПОЛЬЗОВАТЕЛЯ».
+2. **Строгая точность (БЕЗ ГАЛЛЮЦИНАЦИЙ):** Используй ТОЛЬКО информацию из блока «ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ». Не придумывай факты или цены. Если ответа нет, вежливо укажи, что информации в БЗ недостаточно.
+3. **Форматирование:** Используй списки (`•` или `1.`), выделяй ключевые термины и цифры **жирным шрифтом**. Избегай «воды».
+4. **Указание источников:** В конце ответа укажи названия файлов-источников, если они есть.
 
 --- ИНФОРМАЦИЯ ИЗ БАЗЫ ЗНАНИЙ ---
 {context}
@@ -415,20 +421,11 @@ def search_rag_answer(query_text: str, user_info: dict) -> str:
         res = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": llm_prompt}],
-            temperature=0.2
+            temperature=0.1
         )
         return res.choices[0].message.content
     except Exception as e:
         logger.error(f"Ошибка RAG: {e}", exc_info=True)
-        log_analytics(
-            source="Telegram",
-            user_id=user_info.get("id"),
-            username=user_info.get("username"),
-            event_type=user_info.get("event_type", "Текстовый запрос"),
-            query=query_text,
-            status="Ошибка",
-            details=str(e)
-        )
         return f"⚠️ Произошла ошибка при поиске: {e}"
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
