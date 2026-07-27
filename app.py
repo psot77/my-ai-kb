@@ -37,6 +37,7 @@ QDRANT_API_KEY = st.secrets["QDRANT_API_KEY"]
 QDRANT_URL = "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
 COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
+ANALYTICS_COLLECTION = "analytics_logs"
 
 SESSION_TIMEOUT_MINUTES = 15
 
@@ -113,6 +114,11 @@ def extract_text_from_file(uploaded_file) -> str:
         elif fname.endswith(".docx"):
             doc = Document(uploaded_file)
             paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                    if row_text:
+                        paragraphs.append(" | ".join(row_text))
             return "\n\n".join(paragraphs)
         else:
             return uploaded_file.read().decode("utf-8", errors="ignore")
@@ -203,6 +209,12 @@ def init_services():
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
 
+    if ANALYTICS_COLLECTION not in collections:
+        qdrant.create_collection(
+            collection_name=ANALYTICS_COLLECTION,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+        )
+
     for field in ["section", "project", "source_file"]:
         try:
             qdrant.create_payload_index(
@@ -255,6 +267,30 @@ def log_event(action: str, details: str, ip: str = None, username: str = None, r
         qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
     except Exception as e:
         print(f"Ошибка логирования: {e}")
+
+def log_analytics(source: str, user_id: str, username: str, event_type: str, query: str = "", score: float = 0.0, status: str = "Успешно", details: str = ""):
+    """Запись общего аналитического события в Qdrant"""
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        point = PointStruct(
+            id=uuid.uuid4().hex,
+            vector=[0.0] * 384,
+            payload={
+                "timestamp": now_str,
+                "source": source,          # 'Telegram' или 'Web'
+                "user_id": str(user_id),
+                "username": username or "Аноним",
+                "event_type": event_type,   # 'Текстовый запрос', 'Голосовой запрос', 'Загрузка документа'
+                "query": query[:300],
+                "score": float(score),
+                "found_in_kb": bool(score >= 0.20),
+                "status": status,
+                "details": details
+            }
+        )
+        qdrant.upsert(collection_name=ANALYTICS_COLLECTION, points=[point])
+    except Exception as e:
+        print(f"Ошибка логирования аналитики: {e}")
 
 def get_audit_logs():
     try:
@@ -651,6 +687,9 @@ with tab_dict["💬 Чат по проекту"]:
                 prompt = str(transcription).strip()
                 st.session_state.voice_key_counter += 1
                 log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
+                
+                # Лог в аналитику
+                log_analytics("Web", user_data.get("username"), user_data.get("name"), "Голосовой запрос", prompt)
                 st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
             except Exception as e:
                 st.error(f"Ошибка распознавания голоса: {e}")
@@ -692,6 +731,17 @@ with tab_dict["💬 Чат по проекту"]:
 
             t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
             max_score = max([hit.score for hit in search_results]) if search_results else 0.0
+
+            # Запись лога в общую аналитику Qdrant
+            log_analytics(
+                source="Web",
+                user_id=user_data.get("username"),
+                username=user_data.get("name"),
+                event_type="Текстовый запрос",
+                query=prompt,
+                score=max_score,
+                status="Успешно" if max_score >= 0.35 else "Не найдено в БЗ"
+            )
 
             if not search_results or max_score < 0.35:
                 answer = "К сожалению, в базе знаний пока нет подробных инструкций по этому вопросу. Запрос передан администраторам."
@@ -810,6 +860,10 @@ if "📁 Загрузка документов" in tab_dict:
                 if all_points:
                     qdrant.upsert(collection_name=COLLECTION_NAME, points=all_points)
                     log_event("UPLOAD_FILES", f"Загружено {len(uploaded_files)} файлов ({len(all_points)} чанков) в раздел '{target_section}'")
+                    
+                    # Лог в аналитику
+                    log_analytics("Web", user_data.get("username"), user_data.get("name"), "Загрузка документа", f"Файлов: {len(uploaded_files)}", score=1.0, status="Загружено")
+                    
                     st.success(f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего {len(all_points)} чанков)!")
                     st.rerun()
 
@@ -868,26 +922,91 @@ if "🗂️ Управление файлами" in tab_dict:
                         st.divider()
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 4: АНАЛИТИКА
+# ВКЛАДКА 4: АНАЛИТИКА (ОБЪЕДИНЕННАЯ ИЗ QDRANT)
 # ---------------------------------------------------------------------
 if "📈 Аналитика" in tab_dict:
     with tab_dict["📈 Аналитика"]:
-        st.subheader("📈 Статистика использования")
-        if not st.session_state.metrics_history:
-            st.info("Нет данных за текущую сессию.")
-        else:
-            df_m = pd.DataFrame(st.session_state.metrics_history)
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Запросов", len(df_m))
-            m2.metric("Токенов всего", f"{df_m['Всего токенов'].sum():,}")
-            m3.metric("Средний ответ", f"{df_m['Время ответа (сек)'].mean():.2f} с")
-            m4.metric("Поиск Qdrant", f"{df_m['Поиск Qdrant (мс)'].mean():.0f} мс")
+        st.subheader("📈 Статистика использования системы")
+        
+        c_ref, _ = st.columns([1, 4])
+        with c_ref:
+            if st.button("🔄 Обновить данные аналитики", use_container_width=True):
+                st.rerun()
 
+        try:
+            # Чтение записей из Qdrant коллекции analytics_logs
+            scroll_res, _ = qdrant.scroll(
+                collection_name=ANALYTICS_COLLECTION,
+                limit=1000,
+                with_payload=True,
+                with_vectors=False
+            )
+
+            if scroll_res:
+                analytics_data = [pt.payload for pt in scroll_res if pt.payload]
+                df_a = pd.DataFrame(analytics_data)
+
+                total_q = len(df_a)
+                tg_q = len(df_a[df_a['source'] == 'Telegram']) if 'source' in df_a.columns else 0
+                web_q = len(df_a[df_a['source'] == 'Web']) if 'source' in df_a.columns else 0
+                
+                success_count = len(df_a[df_a['found_in_kb'] == True]) if 'found_in_kb' in df_a.columns else 0
+                success_pct = round((success_count / total_q) * 100, 1) if total_q > 0 else 0
+
+                # Метрики
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("Всего обращений", total_q)
+                m2.metric("Из Telegram 📱", tg_q)
+                m3.metric("Из Веб-чата 🌐", web_q)
+                m4.metric("Найдено в БЗ 🎯", f"{success_pct}%")
+
+                st.divider()
+                col_ch1, col_ch2 = st.columns(2)
+                
+                with col_ch1:
+                    st.markdown("### 📱 Распределение по источникам")
+                    if 'source' in df_a.columns:
+                        st.bar_chart(df_a['source'].value_counts())
+
+                with col_ch2:
+                    st.markdown("### 📊 Типы запросов и действий")
+                    if 'event_type' in df_a.columns:
+                        st.bar_chart(df_a['event_type'].value_counts())
+
+                st.divider()
+                st.markdown("### 📜 Подробный журнал операций (Telegram & Web)")
+
+                if 'timestamp' in df_a.columns:
+                    df_a = df_a.sort_values(by='timestamp', ascending=False)
+
+                show_cols = [c for c in ['timestamp', 'source', 'username', 'event_type', 'query', 'score', 'status'] if c in df_a.columns]
+                
+                st.dataframe(
+                    df_a[show_cols],
+                    column_config={
+                        "timestamp": "Время (UTC)",
+                        "source": "Источник",
+                        "username": "Пользователь",
+                        "event_type": "Тип действия",
+                        "query": "Запрос / Файл",
+                        "score": "Точность (Score)",
+                        "status": "Результат"
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Пока нет зафиксированных данных в аналитике Qdrant. Задайте вопрос в Telegram или Веб-чате!")
+
+        except Exception as e:
+            st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
+
+        # Дополнительно: Токены текущей сессии
+        if st.session_state.metrics_history:
             st.divider()
-            st.markdown("### 📊 Расход токенов")
-            st.bar_chart(df_m.set_index("Запрос №")[["Входные токены", "Выходные токены"]])
-            st.markdown("### ⏱️ Динамика задержки")
-            st.line_chart(df_m.set_index("Запрос №")[["Время ответа (сек)"]])
+            st.markdown("### ⚡ Метрики скорости и токенов текущей веб-сессии")
+            df_m = pd.DataFrame(st.session_state.metrics_history)
+            st.dataframe(df_m, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------
 # ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ, КАРТА ПОДКЛЮЧЕНИЙ & БЕЗОПАСНОСТЬ
