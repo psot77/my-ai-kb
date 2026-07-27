@@ -75,7 +75,7 @@ from qdrant_client.models import PointStruct, VectorParams, Distance, Filter, Fi
 from groq import Groq
 from huggingface_hub import InferenceClient
 
-logger.info("=== СТАРТ BOT.PY (С ОГРАНИЧЕНИЕМ ДОСТУПА ПО TELEGRAM ID) ===")
+logger.info("=== СТАРТ BOT.PY (С ПРИВЯЗКОЙ К ОБЩЕМУ РАЗДЕЛУ) ===")
 
 def clean_env(var_name: str, fallback: str = None) -> str:
     val = os.getenv(var_name, fallback)
@@ -88,21 +88,17 @@ GROQ_API_KEY = clean_env("GROQ_API_KEY")
 QDRANT_API_KEY = clean_env("QDRANT_API_KEY")
 HF_TOKEN = clean_env("HF_TOKEN")
 
-# Чтение списка Telegram ID администраторов через запятую (например: "12345678,98765432")
 ADMIN_IDS_RAW = clean_env("ADMIN_IDS", "")
 ADMIN_IDS = {int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()}
 
 qdrant = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, port=443, https=True, check_compatibility=False)
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Проверка, является ли пользователь администратором
 def is_admin(user_id: int) -> bool:
     if not ADMIN_IDS:
-        # Если переменная ADMIN_IDS пустая, доступ открыт всем (чтобы случайно не заблокировать собственника)
         return True
     return user_id in ADMIN_IDS
 
-# Автоматическая проверка / создание коллекции аналитики
 try:
     cols = [c.name for c in qdrant.get_collections().collections]
     if ANALYTICS_COLLECTION not in cols:
@@ -213,7 +209,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def get_my_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /id: возвращает пользователю его Telegram ID"""
     user_id = update.effective_user.id
     username = update.effective_user.username or update.effective_user.first_name
     admin_status = "👑 Администратор" if is_admin(user_id) else "👤 Пользователь"
@@ -426,6 +421,15 @@ def search_rag_answer(query_text: str, user_info: dict) -> str:
         return res.choices[0].message.content
     except Exception as e:
         logger.error(f"Ошибка RAG: {e}", exc_info=True)
+        log_analytics(
+            source="Telegram",
+            user_id=user_info.get("id"),
+            username=user_info.get("username"),
+            event_type=user_info.get("event_type", "Текстовый запрос"),
+            query=query_text,
+            status="Ошибка",
+            details=str(e)
+        )
         return f"⚠️ Произошла ошибка при поиске: {e}"
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -525,6 +529,7 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
                     payload={
                         "text": chunk,
                         "source_file": file_name,
+                        "section": "Общий раздел",  # Привязка к разделу по умолчанию
                         "chunk_index": idx
                     }
                 )
@@ -549,6 +554,7 @@ async def handle_document_message(update: Update, context: ContextTypes.DEFAULT_
             f"✅ **Данные успешно проиндексированы и загружены!**\n\n"
             f"📊 **Статистика:**\n"
             f"• **Файл:** `{file_name}` (`{file_size_kb} KB`)\n"
+            f"• **Раздел:** `Общий раздел`\n"
             f"• **Сгенерировано чанков:** `{len(chunks)}` шт.\n"
             f"• **Время обработки:** `{elapsed_time} сек`\n\n"
             f"💡 *Теперь можете задавать вопросы по содержанию этого документа!*",
@@ -568,17 +574,15 @@ if __name__ == '__main__':
         
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("id", get_my_id))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("files", files_list))
     app.add_handler(CommandHandler("delete", delete_file))
     
-    # Сообщения
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     
-    logger.info("🤖 УСПЕХ: Бот запущен с контролем доступа!")
+    logger.info("🤖 УСПЕХ: Бот запущен!")
     app.run_polling(drop_pending_updates=True)
