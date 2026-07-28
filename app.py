@@ -39,6 +39,7 @@ COLLECTION_NAME = "knowledge_base"
 LOGS_COLLECTION = "audit_logs"
 ANALYTICS_COLLECTION = "analytics_logs"
 CONFIG_COLLECTION = "system_config"
+CHAT_HISTORY_COLLECTION = "chat_history"
 
 SESSION_TIMEOUT_MINUTES = 15
 
@@ -221,6 +222,12 @@ def init_services():
             vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
 
+    if CHAT_HISTORY_COLLECTION not in collections:
+        qdrant.create_collection(
+            collection_name=CHAT_HISTORY_COLLECTION,
+            vectors_config=VectorParams(size=1, distance=Distance.COSINE)
+        )
+
     for field in ["section", "project", "source_file"]:
         try:
             qdrant.create_payload_index(
@@ -242,7 +249,7 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 6. ФУНКЦИИ ЛОГИРОВАНИЯ И КОНФИГУРАЦИИ
+# 6. ФУНКЦИИ ЛОГИРОВАНИЯ, КОНФИГУРАЦИИ И ИСТОРИИ ЧАТОВ
 # =====================================================================
 def load_system_config():
     try:
@@ -267,6 +274,35 @@ def save_system_config(projects, sections):
         qdrant.upsert(collection_name=CONFIG_COLLECTION, points=[point])
     except Exception as e:
         print(f"Ошибка сохранения конфига: {e}")
+
+def load_chat_history(username: str, project: str) -> list:
+    """Загрузка сохраненной истории чата пользователя по конкретному проекту"""
+    try:
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"chat_{username}_{project}"))
+        res = qdrant.retrieve(collection_name=CHAT_HISTORY_COLLECTION, ids=[point_id], with_payload=True)
+        if res and res[0].payload and "messages" in res[0].payload:
+            return res[0].payload["messages"]
+    except Exception as e:
+        print(f"Ошибка загрузки истории чата: {e}")
+    return [{"role": "assistant", "content": f"Здравствуйте! Задайте вопрос по проекту '{project}'."}]
+
+def save_chat_history(username: str, project: str, messages: list):
+    """Сохранение истории диалога пользователя в Qdrant Cloud"""
+    try:
+        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"chat_{username}_{project}"))
+        point = PointStruct(
+            id=point_id,
+            vector=[0.0],
+            payload={
+                "username": username,
+                "project": project,
+                "messages": messages,
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+        )
+        qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
+    except Exception as e:
+        print(f"Ошибка сохранения истории чата: {e}")
 
 def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
@@ -433,11 +469,6 @@ try:
 except Exception:
     pass
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Здравствуйте! Задайте вопрос текстом или записав голос через микрофон."}
-    ]
-
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
 
@@ -539,7 +570,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 10. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ И ЭКСПОРТОМ
+# 10. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ, ВЫБОРОМ ПРОЕКТА И ЭКСПОРТОМ
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -572,6 +603,12 @@ with st.sidebar:
     project_names = list(st.session_state.projects.keys())
     selected_project = st.selectbox("Активный проект:", project_names)
     st.session_state.selected_project = selected_project
+    
+    # АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ИСТОРИИ ЧАТА ПРИ СМЕНЕ ПРОЕКТА / ПОЛЬЗОВАТЕЛЯ
+    user_proj_key = f"{user_data['username']}_{selected_project}"
+    if st.session_state.get("current_loaded_user_project") != user_proj_key:
+        st.session_state.messages = load_chat_history(user_data["username"], selected_project)
+        st.session_state.current_loaded_user_project = user_proj_key
     
     active_sections = st.session_state.projects.get(selected_project, [])
     st.caption(f"Разделы: **{', '.join(active_sections) if active_sections else 'Нет'}**")
@@ -643,6 +680,7 @@ with st.sidebar:
         st.session_state.messages = [
             {"role": "assistant", "content": f"Диалог очищен. Проект: '{selected_project}'."}
         ]
+        save_chat_history(user_data["username"], selected_project, st.session_state.messages)
         st.session_state.metrics_history = []
         st.rerun()
 
@@ -663,7 +701,7 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД С ФОЛЛБЭК-ПОИСКОМ
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД С АВТОСОХРАНЕНИЕМ В QDRANT
 # ---------------------------------------------------------------------
 with tab_dict["💬 Чат по проекту"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
@@ -838,6 +876,8 @@ with tab_dict["💬 Чат по проекту"]:
                     "Проект": selected_project
                 })
 
+        # СОХРАНЕНИЕ ОБНОВЛЕННОЙ ИСТОРИИ ЧАТА В QDRANT
+        save_chat_history(user_data["username"], selected_project, st.session_state.messages)
         st.rerun()
 
 # ---------------------------------------------------------------------
@@ -1047,7 +1087,7 @@ if "📈 Аналитика" in tab_dict:
         except Exception as e:
             st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
 
-        # === РАСШИРЕННЫЕ МЕТРИКИ И ГРАФИКИ ТЕКУЩЕЙ СЕССИИ ===
+        # РАСШИРЕННЫЕ МЕТРИКИ И ГРАФИКИ ТЕКУЩЕЙ СЕССИИ
         if st.session_state.metrics_history:
             st.divider()
             st.markdown("### ⚡ Метрики скорости и токенов текущей веб-сессии (Groq + Qdrant)")
@@ -1059,7 +1099,6 @@ if "📈 Аналитика" in tab_dict:
             avg_time = round(df_m["Время ответа (сек)"].mean(), 2)
             avg_qdrant = round(df_m["Поиск Qdrant (мс)"].mean(), 0)
             
-            # Расчет суточного лимита Groq (Free Tier 100,000 TPD)
             GROQ_DAILY_LIMIT = 100000
             tokens_used_pct = round((total_tokens / GROQ_DAILY_LIMIT) * 100, 2)
             tokens_remaining = GROQ_DAILY_LIMIT - total_tokens
