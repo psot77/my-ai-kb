@@ -299,12 +299,11 @@ def log_event(action: str, details: str, ip: str = None, username: str = None, r
         print(f"Ошибка логирования: {e}")
 
 def log_analytics(source: str, user_id: str, username: str, event_type: str, query: str = "", score: float = 0.0, status: str = "Успешно", details: str = ""):
-    """Безопасное сохранение лога аналитики с вектором размерности 1"""
     try:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         point = PointStruct(
             id=uuid.uuid4().hex,
-            vector=[0.0],  # Размерность 1 для совпадения с коллекции analytics_logs
+            vector=[0.0],
             payload={
                 "timestamp": now_str,
                 "source": source,
@@ -777,7 +776,6 @@ with tab_dict["💬 Чат по проекту"]:
             t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
             max_score = max([hit.score for hit in search_results]) if search_results else 0.0
 
-            # Фиксация в аналитику Qdrant
             log_analytics(
                 source="Web",
                 user_id=user_data.get("username"),
@@ -1049,11 +1047,64 @@ if "📈 Аналитика" in tab_dict:
         except Exception as e:
             st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
 
+        # === РАСШИРЕННЫЕ МЕТРИКИ И ГРАФИКИ ТЕКУЩЕЙ СЕССИИ ===
         if st.session_state.metrics_history:
             st.divider()
-            st.markdown("### ⚡ Метрики скорости и токенов текущей веб-сессии")
+            st.markdown("### ⚡ Метрики скорости и токенов текущей веб-сессии (Groq + Qdrant)")
+            
             df_m = pd.DataFrame(st.session_state.metrics_history)
-            st.dataframe(df_m, use_container_width=True, hide_index=True)
+            
+            total_reqs = len(df_m)
+            total_tokens = df_m["Всего токенов"].sum()
+            avg_time = round(df_m["Время ответа (сек)"].mean(), 2)
+            avg_qdrant = round(df_m["Поиск Qdrant (мс)"].mean(), 0)
+            
+            # Расчет суточного лимита Groq (Free Tier 100,000 TPD)
+            GROQ_DAILY_LIMIT = 100000
+            tokens_used_pct = round((total_tokens / GROQ_DAILY_LIMIT) * 100, 2)
+            tokens_remaining = GROQ_DAILY_LIMIT - total_tokens
+
+            col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+            col_m1.metric("Запросов в сессии", total_reqs)
+            col_m2.metric("Токенов за сессию", f"{total_tokens:,}")
+            col_m3.metric("Остаток Groq TPD", f"{tokens_remaining:,}", f"-{tokens_used_pct}% лимита", delta_color="normal")
+            col_m4.metric("Средний ответ LLM", f"{avg_time} с")
+            col_m5.metric("Средний поиск Qdrant", f"{avg_qdrant:.0f} мс")
+
+            st.caption(f"📊 Расход суточного лимита Groq: **{total_tokens:,}** из **100,000** токенов ({tokens_used_pct}%):")
+            st.progress(min(total_tokens / GROQ_DAILY_LIMIT, 1.0))
+
+            st.markdown("---")
+
+            col_s1, col_s2 = st.columns(2)
+            
+            with col_s1:
+                st.markdown("##### 📊 Расход токенов по запросам (Prompt vs Generation)")
+                st.bar_chart(
+                    df_m.set_index("Запрос №")[["Входные токены", "Выходные токены"]]
+                )
+
+            with col_s2:
+                st.markdown("##### ⏱️ Динамика задержки ответа (в секундах)")
+                st.line_chart(
+                    df_m.set_index("Запрос №")[["Время ответа (сек)"]]
+                )
+
+            st.markdown("##### 📜 Подробный журнал сессии")
+            st.dataframe(
+                df_m,
+                column_config={
+                    "Запрос №": st.column_config.NumberColumn("№", width="small"),
+                    "Входные токены": st.column_config.NumberColumn("Входные (Prompt)", format="%d"),
+                    "Выходные токены": st.column_config.NumberColumn("Выходные (Gen)", format="%d"),
+                    "Всего токенов": st.column_config.NumberColumn("Всего токенов", format="%d"),
+                    "Время ответа (сек)": st.column_config.NumberColumn("Время (сек)", format="%.2f s"),
+                    "Поиск Qdrant (мс)": st.column_config.NumberColumn("Qdrant (мс)", format="%d ms"),
+                    "Проект": "Проект"
+                },
+                use_container_width=True,
+                hide_index=True
+            )
 
 # ---------------------------------------------------------------------
 # ВКЛАДКА 5: ЖУРНАЛ ЛОГОВ, КАРТА ПОДКЛЮЧЕНИЙ & БЕЗОПАСНОСТЬ
