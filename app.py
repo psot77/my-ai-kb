@@ -8,8 +8,8 @@ import uuid
 from datetime import datetime
 
 from docx import Document
-from fastembed import TextEmbedding
 from groq import Groq
+from huggingface_hub import InferenceClient
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 import pandas as pd
 from pypdf import PdfReader
@@ -28,6 +28,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+# --- ИСПРАВЛЕНИЕ: Восстановлен пропущенный импорт ReportLab ---
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 import streamlit as st
 
 # =====================================================================
@@ -39,6 +41,7 @@ GROQ_API_KEY = (
 QDRANT_API_KEY = (
     str(st.secrets.get("QDRANT_API_KEY", "")).strip().strip("'").strip('"')
 )
+HF_TOKEN = str(st.secrets.get("HF_TOKEN", "")).strip().strip("'").strip('"')
 
 QDRANT_URL = (
     "https://18545c10-4b80-4ed2-9304-4ba636a29618.eu-west-1-0.aws.cloud.qdrant.io"
@@ -243,7 +246,7 @@ def generate_pdf_report(project_name: str, messages: list) -> bytes:
 
 
 # =====================================================================
-# 3. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ
+# 3. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА И ВЕКТОРИЗАЦИИ
 # =====================================================================
 def extract_text_from_file(uploaded_file) -> str:
   fname = uploaded_file.name.lower()
@@ -290,6 +293,34 @@ def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
     chunks.append(current_chunk.strip())
 
   return chunks if chunks else [text]
+
+
+def get_cloud_embedding(text: str) -> list:
+  """Легкая генерация эмбеддингов через Hugging Face (экономит ОЗУ)"""
+  if HF_TOKEN:
+    try:
+      client = InferenceClient(token=HF_TOKEN)
+      result = client.feature_extraction(
+          text,
+          model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      )
+      data = result.tolist() if hasattr(result, "tolist") else result
+      while (
+          isinstance(data, list) and len(data) > 0 and isinstance(data[0], list)
+      ):
+        data = data[0]
+      return [float(x) for x in data]
+    except Exception as e:
+      print(f"Ошибка HF API: {e}")
+
+  # Резервный локальный вариант, если HF_TOKEN недоступен
+  from fastembed import TextEmbedding
+
+  embed_model = TextEmbedding(
+      model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      threads=1,
+  )
+  return list(embed_model.embed([text]))[0].tolist()
 
 
 # =====================================================================
@@ -400,15 +431,10 @@ def init_services():
         pass
 
   groq_client = Groq(api_key=GROQ_API_KEY)
-
-  embed_model = TextEmbedding(
-      model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-      threads=1,
-  )
-  return qdrant, groq_client, embed_model
+  return qdrant, groq_client
 
 
-qdrant, groq_client, embedding_model = init_services()
+qdrant, groq_client = init_services()
 
 
 # =====================================================================
@@ -440,7 +466,6 @@ def save_system_config(projects, sections):
 
 
 def get_recent_chat_threads(username: str, limit: int = 50) -> list:
-  """Надежное извлечение списка недавних диалогов для пользователя"""
   try:
     scroll_res = []
     try:
@@ -483,7 +508,6 @@ def get_recent_chat_threads(username: str, limit: int = 50) -> list:
 
 
 def load_chat_thread_by_id(chat_id: str) -> tuple:
-  """Загрузка диалога по ID"""
   try:
     valid_uuid = (
         str(uuid.UUID(chat_id))
@@ -510,7 +534,6 @@ def load_chat_thread_by_id(chat_id: str) -> tuple:
 def save_chat_thread(
     chat_id: str, username: str, project: str, title: str, messages: list
 ):
-  """Гарантированное сохранение чата с защитой от ошибок размерности векторов"""
   now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
   payload = {
       "chat_id": chat_id,
@@ -1203,7 +1226,6 @@ with tab_dict["💬 Чат"]:
   if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # Создаем заголовок чата из первого сообщения пользователя
     if (
         len(st.session_state.messages) <= 3
         or st.session_state.active_chat_title == "Новый чат"
@@ -1215,7 +1237,7 @@ with tab_dict["💬 Чат"]:
     with st.spinner("Поиск ответа в базе знаний..."):
       t_start = time.perf_counter()
 
-      query_vector = list(embedding_model.embed([prompt]))[0].tolist()
+      query_vector = get_cloud_embedding(prompt)
 
       t_qdrant_start = time.perf_counter()
       search_results = []
@@ -1331,7 +1353,6 @@ with tab_dict["💬 Чат"]:
             "Проект": selected_project,
         })
 
-    # ГАРАНТИРОВАННОЕ СОХРАНЕНИЕ ДИАЛОГА В НЕДАВНИЕ (QDRANT)
     save_chat_thread(
         chat_id=st.session_state.active_chat_id,
         username=user_data["username"],
@@ -1413,15 +1434,14 @@ if "📁 Загрузка документов" in tab_dict:
             texts = split_text_into_chunks(extracted_text)
             metadatas = [{}] * len(texts)
 
-          embeddings = list(embedding_model.embed(texts))
-
-          for idx, emb in enumerate(embeddings):
+          for idx, text_chunk in enumerate(texts):
+            emb = get_cloud_embedding(text_chunk)
             all_points.append(
                 PointStruct(
                     id=uuid.uuid4().hex,
-                    vector=emb.tolist(),
+                    vector=emb,
                     payload={
-                        "text": texts[idx],
+                        "text": text_chunk,
                         "source_file": fname,
                         "section": target_section,
                         **metadatas[idx],
@@ -1665,7 +1685,6 @@ if "📈 Аналитика" in tab_dict:
     except Exception as e:
       st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
 
-    # РАСШИРЕННЫЕ МЕТРИКИ И ГРАФИКИ ТЕКУЩЕЙ СЕССИИ
     if st.session_state.metrics_history:
       st.divider()
       st.markdown(
