@@ -43,15 +43,117 @@ CHAT_HISTORY_COLLECTION = "chat_history"
 
 SESSION_TIMEOUT_MINUTES = 15
 
-st.set_page_config(page_title="Enterprise AI Knowledge Base", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Gemini AI Enterprise", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
 
+# =====================================================================
+# CSS СТИЛИЗАЦИЯ ПОД GEMINI UI
+# =====================================================================
 st.markdown(
     """
     <style>
+    /* Основной фон и шрифты */
+    .stApp {
+        background-color: #F8Fafd;
+    }
+    
+    /* Скрытие модалок */
     div[role="dialog"], div[data-testid="stModal"] {
         display: none !important;
         visibility: hidden !important;
         pointer-events: none !important;
+    }
+
+    /* Стилизация Сайдбара Gemini */
+    section[data-testid="stSidebar"] {
+        background-color: #F0F4F9 !important;
+        border-right: 1px solid #E1E8ED;
+        padding-top: 10px;
+    }
+
+    /* Заголовок Gemini UI */
+    .gemini-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 22px;
+        font-weight: 600;
+        color: #1F1F1F;
+        margin-bottom: 12px;
+    }
+    
+    .gemini-spark {
+        background: linear-gradient(135deg, #4285F4, #9B51E0, #EA4335);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 24px;
+    }
+
+    /* Тэги и переключатель режимов */
+    .pill-switch {
+        background-color: #E2E7EC;
+        border-radius: 20px;
+        padding: 3px;
+        display: flex;
+        margin-bottom: 15px;
+    }
+
+    /* Карточки недавних чатов */
+    .recent-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: #72777A;
+        margin-top: 15px;
+        margin-bottom: 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    /* Стилизация кнопок недавних чатов */
+    div[data-testid="stSidebar"] button {
+        border-radius: 20px !important;
+        border: none !important;
+        text-align: left !important;
+        font-size: 14px !important;
+        color: #2D3135 !important;
+        background-color: transparent !important;
+        transition: all 0.2s ease;
+    }
+
+    div[data-testid="stSidebar"] button:hover {
+        background-color: #E2E7EC !important;
+        color: #1F1F1F !important;
+    }
+
+    /* Карточка профиля внизу */
+    .user-profile-card {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px;
+        background: #E8EEF5;
+        border-radius: 16px;
+        margin-top: 20px;
+    }
+    
+    .user-avatar {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        background-color: #4285F4;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: bold;
+    }
+
+    /* Кастомный сколлбар */
+    ::-webkit-scrollbar {
+        width: 6px;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #C4C7C5;
+        border-radius: 10px;
     }
     </style>
     """,
@@ -77,7 +179,6 @@ def generate_pdf_report(project_name: str, messages: list) -> bytes:
 
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    styles = getSampleStyleSheet()
 
     if os.path.exists(font_path):
         pdfmetrics.registerFont(TTFont('DejaVu', font_path))
@@ -249,7 +350,7 @@ def init_services():
 qdrant, groq_client, embedding_model = init_services()
 
 # =====================================================================
-# 6. ФУНКЦИИ ЛОГИРОВАНИЯ, КОНФИГУРАЦИИ И ИСТОРИИ ЧАТОВ
+# 6. ФУНКЦИИ УПРАВЛЕНИЯ "НЕДАВНИМИ" ЧАТАМИ И КОНФИГУРАЦИЕЙ
 # =====================================================================
 def load_system_config():
     try:
@@ -275,34 +376,65 @@ def save_system_config(projects, sections):
     except Exception as e:
         print(f"Ошибка сохранения конфига: {e}")
 
-def load_chat_history(username: str, project: str) -> list:
-    """Загрузка сохраненной истории чата пользователя по конкретному проекту"""
+def get_recent_chat_threads(username: str, limit: int = 20) -> list:
+    """Получение списка недавних диалогов для текущего пользователя"""
     try:
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"chat_{username}_{project}"))
-        res = qdrant.retrieve(collection_name=CHAT_HISTORY_COLLECTION, ids=[point_id], with_payload=True)
-        if res and res[0].payload and "messages" in res[0].payload:
-            return res[0].payload["messages"]
-    except Exception as e:
-        print(f"Ошибка загрузки истории чата: {e}")
-    return [{"role": "assistant", "content": f"Здравствуйте! Задайте вопрос по проекту '{project}'."}]
+        scroll_res, _ = qdrant.scroll(
+            collection_name=CHAT_HISTORY_COLLECTION,
+            scroll_filter=Filter(must=[FieldCondition(key="username", match=MatchValue(value=username))]),
+            limit=limit,
+            with_payload=True,
+            with_vectors=False
+        )
+        threads = []
+        for pt in scroll_res:
+            p = pt.payload or {}
+            threads.append({
+                "chat_id": pt.id,
+                "title": p.get("title", "Новый чат"),
+                "project": p.get("project", "Общий проект"),
+                "updated_at": p.get("updated_at", ""),
+                "messages": p.get("messages", [])
+            })
+        return sorted(threads, key=lambda x: x.get("updated_at", ""), reverse=True)
+    except Exception:
+        return []
 
-def save_chat_history(username: str, project: str, messages: list):
-    """Сохранение истории диалога пользователя в Qdrant Cloud"""
+def load_chat_thread_by_id(chat_id: str) -> tuple:
+    """Загрузка сообщений и проекта конкретного диалога по chat_id"""
     try:
-        point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"chat_{username}_{project}"))
+        res = qdrant.retrieve(collection_name=CHAT_HISTORY_COLLECTION, ids=[chat_id], with_payload=True)
+        if res and res[0].payload:
+            p = res[0].payload
+            return p.get("messages", []), p.get("project", "Общий проект"), p.get("title", "Диалог")
+    except Exception as e:
+        print(f"Ошибка загрузки диалога: {e}")
+    return [], "Общий проект", "Новый чат"
+
+def save_chat_thread(chat_id: str, username: str, project: str, title: str, messages: list):
+    """Сохранение чата с заголовоком в Qdrant"""
+    try:
         point = PointStruct(
-            id=point_id,
+            id=chat_id,
             vector=[0.0],
             payload={
+                "chat_id": chat_id,
                 "username": username,
                 "project": project,
+                "title": title,
                 "messages": messages,
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
         )
         qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
     except Exception as e:
-        print(f"Ошибка сохранения истории чата: {e}")
+        print(f"Ошибка сохранения чата: {e}")
+
+def delete_chat_thread(chat_id: str):
+    try:
+        qdrant.delete(collection_name=CHAT_HISTORY_COLLECTION, points_selector=[chat_id])
+    except Exception as e:
+        print(f"Ошибка удаления чата: {e}")
 
 def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
@@ -418,7 +550,7 @@ if "users_db" not in st.session_state:
         "owner": {
             "password": hash_password("owner123"), 
             "role": "owner", 
-            "name": "Собственник",
+            "name": "Олексій Марфенков",
             "failed_attempts": 0,
             "is_blocked": False,
             "max_connections": 5,
@@ -456,8 +588,8 @@ if "projects" not in st.session_state or "sections" not in st.session_state:
         st.session_state.sections = ["Общий раздел", "Продажи и CRM", "Регламенты", "Техническая часть"]
         st.session_state.projects = {
             "Общий проект": ["Общий раздел"],
-            "Отдел продаж": ["Продажи и CRM", "Общий раздел"],
-            "IT и Разработка": ["Техническая часть", "Регламенты"]
+            "Creatio 2.0": ["Продажи и CRM", "Общий раздел"],
+            "КиберБез": ["Техническая часть", "Регламенты"]
         }
         save_system_config(st.session_state.projects, st.session_state.sections)
 
@@ -468,6 +600,17 @@ try:
             st.session_state.sections.append(sec_key)
 except Exception:
     pass
+
+if "active_chat_id" not in st.session_state:
+    st.session_state.active_chat_id = str(uuid.uuid4())
+
+if "active_chat_title" not in st.session_state:
+    st.session_state.active_chat_title = "Новый чат"
+
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Здравствуйте! Чем я могу помочь вам сегодня?"}
+    ]
 
 if "metrics_history" not in st.session_state:
     st.session_state.metrics_history = []
@@ -502,7 +645,7 @@ if st.session_state.logged_in:
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-        st.markdown("<h1 style='text-align: center;'>🛡️ Вход в AI Базу Знаний</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center;'>✨ Вход в Gemini AI</h1>", unsafe_allow_html=True)
         st.caption("Корпоративная авторизация с контролем безопасности.")
         
         if st.session_state.get("timeout_message"):
@@ -570,7 +713,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 10. БОКОВАЯ ПАНЕЛЬ С ВЫХОДОМ, ВЫБОРОМ ПРОЕКТА И ЭКСПОРТОМ
+# 10. GEMINI СТИЛИЗОВАННАЯ БОКОВАЯ ПАНЕЛЬ (SIDEBAR)
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -582,114 +725,128 @@ role_badges = {
 }
 
 with st.sidebar:
-    st.markdown(f"### {user_data['name']}")
-    st.caption(f"Роль: **{role_badges.get(user_role, user_role)}**")
-    st.caption(f"IP: `{user_data.get('ip', '127.0.0.1')}` ({user_data.get('country', 'Неизвестно')})")
-    st.caption(f"⏱️ Автовыход при неактивности: **{SESSION_TIMEOUT_MINUTES} мин**")
+    # 1. Шапка логотипа Gemini
+    st.markdown('<div class="gemini-header"><span class="gemini-spark">✨</span> <span>Gemini</span></div>', unsafe_allow_html=True)
     
-    if st.button("🚪 Выйти из аккаунта", use_container_width=True):
-        u_rec = st.session_state.users_db.get(user_data["username"])
-        if u_rec and u_rec.get("active_sessions", 0) > 0:
-            u_rec["active_sessions"] -= 1
-            
-        log_event("LOGOUT", "Выход из системы")
-        st.session_state.logged_in = False
-        st.session_state.current_user = None
+    # 2. Табы режимов (Начать чат / Spark BETA)
+    mode_tab1, mode_tab2 = st.columns(2)
+    with mode_tab1:
+        st.button("Начать чат", use_container_width=True, key="btn_mode_chat")
+    with mode_tab2:
+        st.button("Spark β", use_container_width=True, key="btn_mode_spark")
+
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+
+    # 3. Кнопка "Новый чат"
+    if st.button("📝  Новый чат", use_container_width=True, key="btn_new_chat"):
+        st.session_state.active_chat_id = str(uuid.uuid4())
+        st.session_state.active_chat_title = "Новый чат"
+        st.session_state.messages = [
+            {"role": "assistant", "content": "Здравствуйте! Чем я могу помочь вам сегодня?"}
+        ]
         st.rerun()
 
-    st.divider()
-    st.header("📂 Проекты")
+    # 4. Поиск по чатам
+    search_query = st.text_input("🔍 Поиск по чатам", placeholder="Искать в переписках...", label_visibility="collapsed")
+
+    # 5. Раздел "Блокноты" (Проекты)
+    st.markdown('<div class="recent-title">Блокноты</div>', unsafe_allow_html=True)
     
     project_names = list(st.session_state.projects.keys())
-    selected_project = st.selectbox("Активный проект:", project_names)
+    selected_project = st.selectbox("Выберите проект:", project_names, label_visibility="collapsed")
     st.session_state.selected_project = selected_project
-    
-    # АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ИСТОРИИ ЧАТА ПРИ СМЕНЕ ПРОЕКТА / ПОЛЬЗОВАТЕЛЯ
-    user_proj_key = f"{user_data['username']}_{selected_project}"
-    if st.session_state.get("current_loaded_user_project") != user_proj_key:
-        st.session_state.messages = load_chat_history(user_data["username"], selected_project)
-        st.session_state.current_loaded_user_project = user_proj_key
-    
     active_sections = st.session_state.projects.get(selected_project, [])
-    st.caption(f"Разделы: **{', '.join(active_sections) if active_sections else 'Нет'}**")
 
     if user_role in ["admin", "owner"]:
-        with st.expander("➕ Создать проект"):
-            new_proj_name = st.text_input("Имя проекта:", key="input_new_proj_name")
+        with st.expander("➕ Новый блокнот"):
+            new_proj_name = st.text_input("Название блокнота:", key="input_new_proj_name")
             chosen_sections = st.multiselect(
                 "Разделы:",
                 options=st.session_state.sections,
                 default=[st.session_state.sections[0]] if st.session_state.sections else [],
                 key="ms_create_project"
             )
-            if st.button("Сохранить проект", use_container_width=True):
+            if st.button("Сохранить блокнот", use_container_width=True):
                 if new_proj_name and new_proj_name not in st.session_state.projects:
                     st.session_state.projects[new_proj_name] = chosen_sections
                     save_system_config(st.session_state.projects, st.session_state.sections)
                     log_event("CREATE_PROJECT", f"Создан проект '{new_proj_name}': {chosen_sections}")
-                    st.success(f"Проект '{new_proj_name}' создан!")
+                    st.success(f"Блокнот '{new_proj_name}' создан!")
                     st.rerun()
 
-        with st.expander("⚙️ Изменить разделы проекта"):
-            updated_sections = st.multiselect(
-                f"Разделы для '{selected_project}':",
-                options=st.session_state.sections,
-                default=active_sections,
-                key=f"ms_edit_project_{selected_project}"
-            )
-            if st.button("Обновить привязку", use_container_width=True):
-                st.session_state.projects[selected_project] = updated_sections
-                save_system_config(st.session_state.projects, st.session_state.sections)
-                log_event("EDIT_PROJECT", f"Обновлены разделы проекта '{selected_project}': {updated_sections}")
-                st.success("Обновлено!")
+    # 6. Раздел "Недавние" (Recents)
+    st.markdown('<div class="recent-title">Недавние</div>', unsafe_allow_html=True)
+    
+    recent_threads = get_recent_chat_threads(user_data["username"])
+
+    if search_query:
+        recent_threads = [t for t in recent_threads if search_query.lower() in t["title"].lower()]
+
+    if not recent_threads:
+        st.caption("Нет недавних диалогов")
+    else:
+        for thread in recent_threads[:15]:
+            t_id = thread["chat_id"]
+            t_title = thread["title"]
+            
+            # Обрезка слишком длинных заголовков
+            display_title = t_title[:32] + ("..." if len(t_title) > 32 else "")
+            
+            # Подсветка активного чата
+            is_active = (t_id == st.session_state.active_chat_id)
+            prefix = "💬 " if not is_active else "✨ "
+            
+            if st.button(f"{prefix}{display_title}", key=f"rec_{t_id}", use_container_width=True):
+                st.session_state.active_chat_id = t_id
+                msgs, proj, title_loaded = load_chat_thread_by_id(t_id)
+                st.session_state.messages = msgs if msgs else [
+                    {"role": "assistant", "content": "Здравствуйте! Чем я могу помочь вам сегодня?"}
+                ]
+                st.session_state.active_chat_title = title_loaded
                 st.rerun()
 
-    st.divider()
-    
-    try:
-        total_chunks_res = qdrant.count(collection_name=COLLECTION_NAME)
-        doc_count = total_chunks_res.count
-            
-        col_stat1, col_stat2 = st.columns(2)
-        col_stat1.metric("Чанков", doc_count)
-        col_stat2.metric("Разделов", len(active_sections))
-    except Exception:
-        pass
+    st.markdown("---")
 
-    st.divider()
-    st.markdown("### 📥 Экспорт истории")
-    
-    st.download_button(
-        label="📥 Скачать историю (.md)",
-        data=export_chat_history(),
-        file_name=f"chat_{selected_project}.md",
-        mime="text/markdown",
-        use_container_width=True
-    )
-
-    pdf_bytes = generate_pdf_report(selected_project, st.session_state.get("messages", []))
-    st.download_button(
-        label="📄 Скачать отчет (.pdf)",
-        data=pdf_bytes,
-        file_name=f"report_{selected_project}.pdf",
-        mime="application/pdf",
-        use_container_width=True
+    # 7. Карточка пользователя внизу сайдбара
+    st.markdown(
+        f"""
+        <div class="user-profile-card">
+            <div class="user-avatar">{user_data['name'][0].upper()}</div>
+            <div style="flex-grow: 1; overflow: hidden;">
+                <div style="font-weight: 600; font-size: 14px; color: #1F1F1F; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    {user_data['name']}
+                </div>
+                <div style="font-size: 11px; color: #72777A;">
+                    {role_badges.get(user_role, user_role)}
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
     
-    if st.button("🗑️ Очистить диалог", use_container_width=True):
-        st.session_state.messages = [
-            {"role": "assistant", "content": f"Диалог очищен. Проект: '{selected_project}'."}
-        ]
-        save_chat_history(user_data["username"], selected_project, st.session_state.messages)
-        st.session_state.metrics_history = []
-        st.rerun()
+    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+    
+    col_sub_exp, col_sub_out = st.columns([1, 1])
+    with col_sub_exp:
+        pdf_bytes = generate_pdf_report(selected_project, st.session_state.get("messages", []))
+        st.download_button("📄 PDF", data=pdf_bytes, file_name=f"report_{selected_project}.pdf", mime="application/pdf", use_container_width=True)
+    with col_sub_out:
+        if st.button("🚪 Выйти", use_container_width=True):
+            u_rec = st.session_state.users_db.get(user_data["username"])
+            if u_rec and u_rec.get("active_sessions", 0) > 0:
+                u_rec["active_sessions"] -= 1
+            log_event("LOGOUT", "Выход из системы")
+            st.session_state.logged_in = False
+            st.session_state.current_user = None
+            st.rerun()
 
 # =====================================================================
 # 11. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
 # =====================================================================
-st.title(f"🤖 AI Ассистент — [{selected_project}]")
+st.title(f"✨ Gemini — [{selected_project}]")
 
-tab_titles = ["💬 Чат по проекту"]
+tab_titles = ["💬 Чат"]
 
 if user_role in ["admin", "owner"]:
     tab_titles.extend(["📁 Загрузка документов", "🗂️ Управление файлами", "📈 Аналитика"])
@@ -701,9 +858,9 @@ tabs = st.tabs(tab_titles)
 tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
 
 # ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД С АВТОСОХРАНЕНИЕМ В QDRANT
+# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД
 # ---------------------------------------------------------------------
-with tab_dict["💬 Чат по проекту"]:
+with tab_dict["💬 Чат"]:
     for msg_idx, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
@@ -770,12 +927,16 @@ with tab_dict["💬 Чат по проекту"]:
             except Exception as e:
                 st.error(f"Ошибка распознавания голоса: {e}")
 
-    text_prompt = st.chat_input(f"Или введите вопрос по проекту '{selected_project}'...")
+    text_prompt = st.chat_input(f"Спросите что-нибудь по проекту '{selected_project}'...")
     if text_prompt:
         prompt = text_prompt
 
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
+
+        # Если это первый запрос в чате, сформировать заголовок из первых 35 символов
+        if len(st.session_state.messages) <= 3:
+            st.session_state.active_chat_title = prompt[:35] + ("..." if len(prompt) > 35 else "")
 
         with st.spinner("Поиск ответа в базе знаний..."):
             t_start = time.perf_counter()
@@ -876,8 +1037,14 @@ with tab_dict["💬 Чат по проекту"]:
                     "Проект": selected_project
                 })
 
-        # СОХРАНЕНИЕ ОБНОВЛЕННОЙ ИСТОРИИ ЧАТА В QDRANT
-        save_chat_history(user_data["username"], selected_project, st.session_state.messages)
+        # СОХРАНЕНИЕ ОБНОВЛЕННОГО ДИАЛОГА В НЕДАВНИЕ (QDRANT)
+        save_chat_thread(
+            chat_id=st.session_state.active_chat_id,
+            username=user_data["username"],
+            project=selected_project,
+            title=st.session_state.active_chat_title,
+            messages=st.session_state.messages
+        )
         st.rerun()
 
 # ---------------------------------------------------------------------
