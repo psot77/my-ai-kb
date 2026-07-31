@@ -28,7 +28,6 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-# --- ИСПРАВЛЕНИЕ: Восстановлен пропущенный импорт ReportLab ---
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 import streamlit as st
 
@@ -136,7 +135,7 @@ st.markdown(
         padding: 10px;
         background: #E8EEF5;
         border-radius: 16px;
-        margin-top: 20px;
+        margin-top: 10px;
     }
     
     .user-avatar {
@@ -296,7 +295,6 @@ def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
 
 
 def get_cloud_embedding(text: str) -> list:
-  """Легкая генерация эмбеддингов через Hugging Face (экономит ОЗУ)"""
   if HF_TOKEN:
     try:
       client = InferenceClient(token=HF_TOKEN)
@@ -313,7 +311,6 @@ def get_cloud_embedding(text: str) -> list:
     except Exception as e:
       print(f"Ошибка HF API: {e}")
 
-  # Резервный локальный вариант, если HF_TOKEN недоступен
   from fastembed import TextEmbedding
 
   embed_model = TextEmbedding(
@@ -732,6 +729,9 @@ if "users_db" not in st.session_state:
 if "logged_in" not in st.session_state:
   st.session_state.logged_in = False
 
+if "view_mode" not in st.session_state:
+  st.session_state.view_mode = "chat"
+
 if "projects" not in st.session_state or "sections" not in st.session_state:
   db_projects, db_sections = load_system_config()
   if db_projects and db_sections:
@@ -958,6 +958,7 @@ with st.sidebar:
 
   # 2. Кнопка "Новый чат"
   if st.button("➕  Новый чат", use_container_width=True, key="btn_new_chat"):
+    st.session_state.view_mode = "chat"
     st.session_state.active_chat_id = str(uuid.uuid4())
     st.session_state.active_chat_title = "Новый чат"
     st.session_state.messages = [{
@@ -1039,12 +1040,16 @@ with st.sidebar:
 
       display_title = t_title[:30] + ("..." if len(t_title) > 30 else "")
 
-      is_active = t_id == st.session_state.active_chat_id
+      is_active = (
+          t_id == st.session_state.active_chat_id
+          and st.session_state.view_mode == "chat"
+      )
       prefix = "💬 " if not is_active else "📌 "
 
       if st.button(
           f"{prefix}{display_title}", key=f"rec_{t_id}", use_container_width=True
       ):
+        st.session_state.view_mode = "chat"
         st.session_state.active_chat_id = t_id
         msgs, proj, title_loaded = load_chat_thread_by_id(t_id)
         st.session_state.messages = (
@@ -1057,6 +1062,20 @@ with st.sidebar:
         )
         st.session_state.active_chat_title = title_loaded
         st.rerun()
+
+  # --- ПОЛЕ 3: КНОПКА "НАСТРОЙКИ" (Перемещена из верхних вкладок в сайдбар) ---
+  if user_role in ["admin", "owner"]:
+    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
+    btn_settings_label = (
+        "⚙️ Настройки"
+        if st.session_state.view_mode != "settings"
+        else "📌 ⚙️ Настройки"
+    )
+    if st.button(
+        btn_settings_label, use_container_width=True, key="btn_settings_sidebar"
+    ):
+      st.session_state.view_mode = "settings"
+      st.rerun()
 
   st.markdown("---")
 
@@ -1103,27 +1122,14 @@ with st.sidebar:
       st.rerun()
 
 # =====================================================================
-# 11. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
+# 11. ОСНОВНОЙ ИНТЕРФЕЙС (ЧАТ ИЛИ НАСТРОЙКИ)
 # =====================================================================
-st.title(f"🤖 Mavbot — [{selected_project}]")
+if st.session_state.view_mode == "chat":
+  # ---------------------------------------------------------------------
+  # РЕЖИМ 1: ЧАТ И ГОЛОСОВОЙ ВВОД
+  # ---------------------------------------------------------------------
+  st.title(f"🤖 Mavbot — [{selected_project}]")
 
-tab_titles = ["💬 Чат"]
-
-if user_role in ["admin", "owner"]:
-  tab_titles.extend(
-      ["📁 Загрузка документов", "🗂️ Управление файлами", "📈 Аналитика"]
-  )
-
-if user_role == "owner":
-  tab_titles.append("⚙️ Настройки")
-
-tabs = st.tabs(tab_titles)
-tab_dict = {title: tab for title, tab in zip(tab_titles, tabs)}
-
-# ---------------------------------------------------------------------
-# ВКЛАДКА 1: ЧАТ И ГОЛОСОВОЙ ВВОД
-# ---------------------------------------------------------------------
-with tab_dict["💬 Чат"]:
   for msg_idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
       st.write(msg["content"])
@@ -1362,149 +1368,212 @@ with tab_dict["💬 Чат"]:
     )
     st.rerun()
 
-# ---------------------------------------------------------------------
-# ВКЛАДКА 2: ЗАГРУЗКА ДОКУМЕНТОВ
-# ---------------------------------------------------------------------
-if "📁 Загрузка документов" in tab_dict:
-  with tab_dict["📁 Загрузка документов"]:
-    st.subheader("📁 Пополнение Базы Знаний (PDF, Word, Text, Markdown)")
-    col_up1, col_up2 = st.columns([2, 1])
+else:
+  # ---------------------------------------------------------------------
+  # РЕЖИМ 2: НАСТРОЙКИ (ПОЛЕ 2 СО ВСЕМИ ВКЛАДКАМИ)
+  # ---------------------------------------------------------------------
+  col_head1, col_head2 = st.columns([4, 1])
+  with col_head1:
+    st.title(f"⚙️ Настройки системы — [{selected_project}]")
+  with col_head2:
+    if st.button("💬 Вернуться в чат", use_container_width=True):
+      st.session_state.view_mode = "chat"
+      st.rerun()
 
-    with col_up1:
-      target_section = st.selectbox(
-          "Целевой раздел:", st.session_state.sections
-      )
-    with col_up2:
-      new_sec_input = st.text_input("➕ Новый раздел:")
-      if st.button("Добавить раздел", use_container_width=True):
-        if new_sec_input and new_sec_input not in st.session_state.sections:
-          st.session_state.sections.append(new_sec_input)
-          save_system_config(
-              st.session_state.projects, st.session_state.sections
-          )
-          log_event("CREATE_SECTION", f"Создан раздел '{new_sec_input}'")
-          st.success(f"Раздел '{new_sec_input}' создан!")
-          st.rerun()
-
-    st.divider()
-    uploaded_files = st.file_uploader(
-        "Перетащите файлы (`.pdf`, `.docx`, `.txt`, `.md`):",
-        type=["pdf", "docx", "txt", "md"],
-        accept_multiple_files=True,
+  # Формирование всех вкладок (1: Загрузка документов, Управление файлами, Аналитика + 2: Безопасность и Логи)
+  settings_tab_titles = []
+  if user_role in ["admin", "owner"]:
+    settings_tab_titles.extend(
+        ["📁 Загрузка документов", "🗂️ Управление файлами", "📈 Аналитика"]
     )
+  if user_role == "owner":
+    settings_tab_titles.extend([
+        "📜 Полный Журнал Логов",
+        "🗺️ Карта Входов (GeoIP)",
+        "💡 Пробелы в знаниях & Отзывы",
+        "👥 Управление Аккаунтами",
+    ])
 
-    if uploaded_files and st.button(
-        f"🚀 Векторизовать и загрузить в '{target_section}'",
-        use_container_width=True,
-    ):
-      markdown_splitter = MarkdownHeaderTextSplitter(
-          headers_to_split_on=[
-              ("#", "Header 1"),
-              ("##", "Header 2"),
-              ("###", "Header 3"),
-          ],
-          strip_headers=False,
+  s_tabs = st.tabs(settings_tab_titles)
+  s_tab_dict = {
+      title: tab for title, tab in zip(settings_tab_titles, s_tabs)
+  }
+
+  # --- ВКЛАДКА: ЗАГРУЗКА ДОКУМЕНТОВ ---
+  if "📁 Загрузка документов" in s_tab_dict:
+    with s_tab_dict["📁 Загрузка документов"]:
+      st.subheader("📁 Пополнение Базы Знаний (PDF, Word, Text, Markdown)")
+      col_up1, col_up2 = st.columns([2, 1])
+
+      with col_up1:
+        target_section = st.selectbox(
+            "Целевой раздел:", st.session_state.sections
+        )
+      with col_up2:
+        new_sec_input = st.text_input("➕ Новый раздел:")
+        if st.button("Добавить раздел", use_container_width=True):
+          if new_sec_input and new_sec_input not in st.session_state.sections:
+            st.session_state.sections.append(new_sec_input)
+            save_system_config(
+                st.session_state.projects, st.session_state.sections
+            )
+            log_event("CREATE_SECTION", f"Создан раздел '{new_sec_input}'")
+            st.success(f"Раздел '{new_sec_input}' создан!")
+            st.rerun()
+
+      st.divider()
+      uploaded_files = st.file_uploader(
+          "Перетащите файлы (`.pdf`, `.docx`, `.txt`, `.md`):",
+          type=["pdf", "docx", "txt", "md"],
+          accept_multiple_files=True,
       )
 
-      all_points = []
-      with st.spinner(
-          "Извлечение текста, нарезка на чанки и векторизация..."
+      if uploaded_files and st.button(
+          f"🚀 Векторизовать и загрузить в '{target_section}'",
+          use_container_width=True,
       ):
-        for file in uploaded_files:
-          fname = file.name
-          extracted_text = extract_text_from_file(file)
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[
+                ("#", "Header 1"),
+                ("##", "Header 2"),
+                ("###", "Header 3"),
+            ],
+            strip_headers=False,
+        )
 
-          if not extracted_text.strip():
-            st.warning(
-                f"Файл '{fname}' пуст или из него не удалось извлечь текст."
-            )
-            continue
-
-          if fname.lower().endswith(".md"):
-            chunks_md = markdown_splitter.split_text(extracted_text)
-            texts = (
-                [c.page_content for c in chunks_md]
-                if chunks_md
-                else [extracted_text]
-            )
-            metadatas = (
-                [c.metadata for c in chunks_md] if chunks_md else [{}]
-            )
-          else:
-            texts = split_text_into_chunks(extracted_text)
-            metadatas = [{}] * len(texts)
-
-          for idx, text_chunk in enumerate(texts):
-            emb = get_cloud_embedding(text_chunk)
-            all_points.append(
-                PointStruct(
-                    id=uuid.uuid4().hex,
-                    vector=emb,
-                    payload={
-                        "text": text_chunk,
-                        "source_file": fname,
-                        "section": target_section,
-                        **metadatas[idx],
-                    },
-                )
-            )
-
-        if all_points:
-          qdrant.upsert(
-              collection_name=COLLECTION_NAME, points=all_points
-          )
-          log_event(
-              "UPLOAD_FILES",
-              f"Загружено {len(uploaded_files)} файлов ({len(all_points)}"
-              f" чанков) в раздел '{target_section}'",
-          )
-          log_analytics(
-              "Web",
-              user_data.get("username"),
-              user_data.get("name"),
-              "Загрузка документа",
-              f"Файлов: {len(uploaded_files)}",
-              score=1.0,
-              status="Загружено",
-          )
-
-          st.success(
-              f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего"
-              f" {len(all_points)} чанков)!"
-          )
-          st.rerun()
-
-# ---------------------------------------------------------------------
-# ВКЛАДКА 3: УПРАВЛЕНИЕ ФАЙЛАМИ
-# ---------------------------------------------------------------------
-if "🗂️ Управление файлами" in tab_dict:
-  with tab_dict["🗂️ Управление файлами"]:
-    st.subheader("🗂️ Управление документами")
-    files_by_sec = get_db_files_summary()
-
-    if not files_by_sec:
-      st.info("Файлы отсутствуют.")
-    else:
-      for sec_name, files_dict in files_by_sec.items():
-        with st.expander(
-            f"📁 Раздел: **{sec_name}** ({len(files_dict)} файлов)",
-            expanded=True,
+        all_points = []
+        with st.spinner(
+            "Извлечение текста, нарезка на чанки и векторизация..."
         ):
-          for fname, chunk_cnt in files_dict.items():
-            c1, c2 = st.columns([3, 1])
-            with c1:
-              st.write(f"📄 **{fname}** (`{chunk_cnt} чанков`)")
-              other_secs = [
-                  s for s in st.session_state.sections if s != sec_name
-              ]
-              if other_secs:
-                dest_s = st.selectbox(
-                    "Переместить в:",
-                    other_secs,
-                    key=f"s_{sec_name}_{fname}",
-                )
+          for file in uploaded_files:
+            fname = file.name
+            extracted_text = extract_text_from_file(file)
+
+            if not extracted_text.strip():
+              st.warning(
+                  f"Файл '{fname}' пуст или из него не удалось извлечь текст."
+              )
+              continue
+
+            if fname.lower().endswith(".md"):
+              chunks_md = markdown_splitter.split_text(extracted_text)
+              texts = (
+                  [c.page_content for c in chunks_md]
+                  if chunks_md
+                  else [extracted_text]
+              )
+              metadatas = (
+                  [c.metadata for c in chunks_md] if chunks_md else [{}]
+              )
+            else:
+              texts = split_text_into_chunks(extracted_text)
+              metadatas = [{}] * len(texts)
+
+            for idx, text_chunk in enumerate(texts):
+              emb = get_cloud_embedding(text_chunk)
+              all_points.append(
+                  PointStruct(
+                      id=uuid.uuid4().hex,
+                      vector=emb,
+                      payload={
+                          "text": text_chunk,
+                          "source_file": fname,
+                          "section": target_section,
+                          **metadatas[idx],
+                      },
+                  )
+              )
+
+          if all_points:
+            qdrant.upsert(
+                collection_name=COLLECTION_NAME, points=all_points
+            )
+            log_event(
+                "UPLOAD_FILES",
+                f"Загружено {len(uploaded_files)} файлов ({len(all_points)}"
+                f" чанков) в раздел '{target_section}'",
+            )
+            log_analytics(
+                "Web",
+                user_data.get("username"),
+                user_data.get("name"),
+                "Загрузка документа",
+                f"Файлов: {len(uploaded_files)}",
+                score=1.0,
+                status="Загружено",
+            )
+
+            st.success(
+                f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего"
+                f" {len(all_points)} чанков)!"
+            )
+            st.rerun()
+
+  # --- ВКЛАДКА: УПРАВЛЕНИЕ ФАЙЛАМИ ---
+  if "🗂️ Управление файлами" in s_tab_dict:
+    with s_tab_dict["🗂️ Управление файлами"]:
+      st.subheader("🗂️ Управление документами")
+      files_by_sec = get_db_files_summary()
+
+      if not files_by_sec:
+        st.info("Файлы отсутствуют.")
+      else:
+        for sec_name, files_dict in files_by_sec.items():
+          with st.expander(
+              f"📁 Раздел: **{sec_name}** ({len(files_dict)} файлов)",
+              expanded=True,
+          ):
+            for fname, chunk_cnt in files_dict.items():
+              c1, c2 = st.columns([3, 1])
+              with c1:
+                st.write(f"📄 **{fname}** (`{chunk_cnt} чанков`)")
+                other_secs = [
+                    s for s in st.session_state.sections if s != sec_name
+                ]
+                if other_secs:
+                  dest_s = st.selectbox(
+                      "Переместить в:",
+                      other_secs,
+                      key=f"s_{sec_name}_{fname}",
+                  )
+                  if st.button(
+                      "🚚 Переместить", key=f"m_{sec_name}_{fname}"
+                  ):
+                    pts, _ = qdrant.scroll(
+                        collection_name=COLLECTION_NAME,
+                        scroll_filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="source_file",
+                                    match=MatchValue(value=fname),
+                                ),
+                                FieldCondition(
+                                    key="section",
+                                    match=MatchValue(value=sec_name),
+                                ),
+                            ]
+                        ),
+                        limit=10000,
+                        with_payload=False,
+                        with_vectors=False,
+                    )
+                    p_ids = [p.id for p in pts]
+                    if p_ids:
+                      qdrant.set_payload(
+                          collection_name=COLLECTION_NAME,
+                          payload={"section": dest_s},
+                          points=p_ids,
+                      )
+                      log_event(
+                          "MOVE_FILE",
+                          f"Файл '{fname}' из '{sec_name}' в '{dest_s}'",
+                      )
+                      st.success("Перемещено!")
+                      st.rerun()
+
+              with c2:
                 if st.button(
-                    "🚚 Переместить", key=f"m_{sec_name}_{fname}"
+                    "🗑️ Удалить", key=f"d_{sec_name}_{fname}", type="primary"
                 ):
                   pts, _ = qdrant.scroll(
                       collection_name=COLLECTION_NAME,
@@ -1526,267 +1595,218 @@ if "🗂️ Управление файлами" in tab_dict:
                   )
                   p_ids = [p.id for p in pts]
                   if p_ids:
-                    qdrant.set_payload(
+                    qdrant.delete(
                         collection_name=COLLECTION_NAME,
-                        payload={"section": dest_s},
-                        points=p_ids,
+                        points_selector=p_ids,
                     )
                     log_event(
-                        "MOVE_FILE",
-                        f"Файл '{fname}' из '{sec_name}' в '{dest_s}'",
+                        "DELETE_FILE",
+                        f"Файл '{fname}' удален из '{sec_name}'",
                     )
-                    st.success("Перемещено!")
+                    st.success("Удалено!")
                     st.rerun()
+              st.divider()
 
-            with c2:
-              if st.button(
-                  "🗑️ Удалить", key=f"d_{sec_name}_{fname}", type="primary"
-              ):
-                pts, _ = qdrant.scroll(
-                    collection_name=COLLECTION_NAME,
-                    scroll_filter=Filter(
-                        must=[
-                            FieldCondition(
-                                key="source_file",
-                                match=MatchValue(value=fname),
-                            ),
-                            FieldCondition(
-                                key="section",
-                                match=MatchValue(value=sec_name),
-                            ),
-                        ]
-                    ),
-                    limit=10000,
-                    with_payload=False,
-                    with_vectors=False,
-                )
-                p_ids = [p.id for p in pts]
-                if p_ids:
-                  qdrant.delete(
-                      collection_name=COLLECTION_NAME,
-                      points_selector=p_ids,
-                  )
-                  log_event(
-                      "DELETE_FILE",
-                      f"Файл '{fname}' удален из '{sec_name}'",
-                  )
-                  st.success("Удалено!")
-                  st.rerun()
-            st.divider()
+  # --- ВКЛАДКА: АНАЛИТИКА ---
+  if "📈 Аналитика" in s_tab_dict:
+    with s_tab_dict["📈 Аналитика"]:
+      st.subheader("📈 Статистика использования системы")
 
-# ---------------------------------------------------------------------
-# ВКЛАДКА 4: АНАЛИТИКА
-# ---------------------------------------------------------------------
-if "📈 Аналитика" in tab_dict:
-  with tab_dict["📈 Аналитика"]:
-    st.subheader("📈 Статистика использования системы")
+      c_ref, _ = st.columns([1, 4])
+      with c_ref:
+        if st.button(
+            "🔄 Обновить данные аналитики", use_container_width=True
+        ):
+          st.rerun()
 
-    c_ref, _ = st.columns([1, 4])
-    with c_ref:
-      if st.button(
-          "🔄 Обновить данные аналитики", use_container_width=True
-      ):
-        st.rerun()
-
-    try:
-      scroll_res, _ = qdrant.scroll(
-          collection_name=ANALYTICS_COLLECTION,
-          limit=1000,
-          with_payload=True,
-          with_vectors=False,
-      )
-
-      if scroll_res:
-        analytics_data = [pt.payload for pt in scroll_res if pt.payload]
-        df_a = pd.DataFrame(analytics_data)
-
-        total_q = len(df_a)
-        tg_q = (
-            len(df_a[df_a["source"] == "Telegram"])
-            if "source" in df_a.columns
-            else 0
-        )
-        web_q = (
-            len(df_a[df_a["source"] == "Web"])
-            if "source" in df_a.columns
-            else 0
+      try:
+        scroll_res, _ = qdrant.scroll(
+            collection_name=ANALYTICS_COLLECTION,
+            limit=1000,
+            with_payload=True,
+            with_vectors=False,
         )
 
-        success_count = (
-            len(df_a[df_a["found_in_kb"] == True])
-            if "found_in_kb" in df_a.columns
-            else 0
-        )
-        success_pct = (
-            round((success_count / total_q) * 100, 1) if total_q > 0 else 0
-        )
+        if scroll_res:
+          analytics_data = [pt.payload for pt in scroll_res if pt.payload]
+          df_a = pd.DataFrame(analytics_data)
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Всего обращений", total_q)
-        m2.metric("Из Telegram 📱", tg_q)
-        m3.metric("Из Веб-чата 🌐", web_q)
-        m4.metric("Найдено в БЗ 🎯", f"{success_pct}%")
+          total_q = len(df_a)
+          tg_q = (
+              len(df_a[df_a["source"] == "Telegram"])
+              if "source" in df_a.columns
+              else 0
+          )
+          web_q = (
+              len(df_a[df_a["source"] == "Web"])
+              if "source" in df_a.columns
+              else 0
+          )
 
-        st.divider()
-        col_ch1, col_ch2 = st.columns(2)
+          success_count = (
+              len(df_a[df_a["found_in_kb"] == True])
+              if "found_in_kb" in df_a.columns
+              else 0
+          )
+          success_pct = (
+              round((success_count / total_q) * 100, 1) if total_q > 0 else 0
+          )
 
-        with col_ch1:
-          st.markdown("### 📱 Распределение по источникам")
-          if "source" in df_a.columns:
-            st.bar_chart(df_a["source"].value_counts())
+          m1, m2, m3, m4 = st.columns(4)
+          m1.metric("Всего обращений", total_q)
+          m2.metric("Из Telegram 📱", tg_q)
+          m3.metric("Из Веб-чата 🌐", web_q)
+          m4.metric("Найдено в БЗ 🎯", f"{success_pct}%")
 
-        with col_ch2:
-          st.markdown("### 📊 Типы запросов и действий")
-          if "event_type" in df_a.columns:
-            st.bar_chart(df_a["event_type"].value_counts())
+          st.divider()
+          col_ch1, col_ch2 = st.columns(2)
 
+          with col_ch1:
+            st.markdown("### 📱 Распределение по источникам")
+            if "source" in df_a.columns:
+              st.bar_chart(df_a["source"].value_counts())
+
+          with col_ch2:
+            st.markdown("### 📊 Типы запросов и действий")
+            if "event_type" in df_a.columns:
+              st.bar_chart(df_a["event_type"].value_counts())
+
+          st.divider()
+          st.markdown(
+              "### 📜 Подробный журнал операций (Telegram & Web)"
+          )
+
+          if "timestamp" in df_a.columns:
+            df_a = df_a.sort_values(by="timestamp", ascending=False)
+
+          show_cols = [
+              c
+              for c in [
+                  "timestamp",
+                  "source",
+                  "username",
+                  "event_type",
+                  "query",
+                  "score",
+                  "status",
+              ]
+              if c in df_a.columns
+          ]
+
+          st.dataframe(
+              df_a[show_cols],
+              column_config={
+                  "timestamp": "Время (UTC)",
+                  "source": "Источник",
+                  "username": "Пользователь",
+                  "event_type": "Тип действия",
+                  "query": "Запрос / Файл",
+                  "score": "Точность (Score)",
+                  "status": "Результат",
+              },
+              use_container_width=True,
+              hide_index=True,
+          )
+        else:
+          st.info(
+              "Пока нет зафиксированных данных в аналитике Qdrant. Задайте"
+              " вопрос в Telegram или Веб-чате!"
+          )
+
+      except Exception as e:
+        st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
+
+      if st.session_state.metrics_history:
         st.divider()
         st.markdown(
-            "### 📜 Подробный журнал операций (Telegram & Web)"
+            "### ⚡ Метрики скорости и токенов текущей веб-сессии (Groq +"
+            " Qdrant)"
         )
 
-        if "timestamp" in df_a.columns:
-          df_a = df_a.sort_values(by="timestamp", ascending=False)
+        df_m = pd.DataFrame(st.session_state.metrics_history)
 
-        show_cols = [
-            c
-            for c in [
-                "timestamp",
-                "source",
-                "username",
-                "event_type",
-                "query",
-                "score",
-                "status",
-            ]
-            if c in df_a.columns
-        ]
+        total_reqs = len(df_m)
+        total_tokens = df_m["Всего токенов"].sum()
+        avg_time = round(df_m["Время ответа (сек)"].mean(), 2)
+        avg_qdrant = round(df_m["Поиск Qdrant (мс)"].mean(), 0)
 
+        GROQ_DAILY_LIMIT = 100000
+        tokens_used_pct = round((total_tokens / GROQ_DAILY_LIMIT) * 100, 2)
+        tokens_remaining = GROQ_DAILY_LIMIT - total_tokens
+
+        col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+        col_m1.metric("Запросов в сессии", total_reqs)
+        col_m2.metric("Токенов за сессию", f"{total_tokens:,}")
+        col_m3.metric(
+            "Остаток Groq TPD",
+            f"{tokens_remaining:,}",
+            f"-{tokens_used_pct}% лимита",
+            delta_color="normal",
+        )
+        col_m4.metric("Средний ответ LLM", f"{avg_time} с")
+        col_m5.metric("Средний поиск Qdrant", f"{avg_qdrant:.0f} мс")
+
+        st.caption(
+            f"📊 Расход суточного лимита Groq: **{total_tokens:,}** из"
+            f" **100,000** токенов ({tokens_used_pct}%):"
+        )
+        st.progress(min(total_tokens / GROQ_DAILY_LIMIT, 1.0))
+
+        st.markdown("---")
+
+        col_s1, col_s2 = st.columns(2)
+
+        with col_s1:
+          st.markdown(
+              "##### 📊 Расход токенов по запросам (Prompt vs Generation)"
+          )
+          st.bar_chart(
+              df_m.set_index("Запрос №")[
+                  ["Входные токены", "Выходные токены"]
+              ]
+          )
+
+        with col_s2:
+          st.markdown("##### ⏱️ Динамика задержки ответа (в секундах)")
+          st.line_chart(
+              df_m.set_index("Запрос №")[["Время ответа (сек)"]]
+          )
+
+        st.markdown("##### 📜 Подробный журнал сессии")
         st.dataframe(
-            df_a[show_cols],
+            df_m,
             column_config={
-                "timestamp": "Время (UTC)",
-                "source": "Источник",
-                "username": "Пользователь",
-                "event_type": "Тип действия",
-                "query": "Запрос / Файл",
-                "score": "Точность (Score)",
-                "status": "Результат",
+                "Запрос №": st.column_config.NumberColumn(
+                    "№", width="small"
+                ),
+                "Входные токены": st.column_config.NumberColumn(
+                    "Входные (Prompt)", format="%d"
+                ),
+                "Выходные токены": st.column_config.NumberColumn(
+                    "Выходные (Gen)", format="%d"
+                ),
+                "Всего токенов": st.column_config.NumberColumn(
+                    "Всего токенов", format="%d"
+                ),
+                "Время ответа (сек)": st.column_config.NumberColumn(
+                    "Время (сек)", format="%.2f s"
+                ),
+                "Поиск Qdrant (мс)": st.column_config.NumberColumn(
+                    "Qdrant (мс)", format="%d ms"
+                ),
+                "Проект": "Проект",
             },
             use_container_width=True,
             hide_index=True,
         )
-      else:
-        st.info(
-            "Пока нет зафиксированных данных в аналитике Qdrant. Задайте"
-            " вопрос в Telegram или Веб-чате!"
-        )
 
-    except Exception as e:
-      st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
+  # ОБЩИЕ ДАННЫЕ ЛОГОВ ДЛЯ ПОДВКЛАДОК БЕЗОПАСНОСТИ
+  logs_data = get_audit_logs()
+  df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
 
-    if st.session_state.metrics_history:
-      st.divider()
-      st.markdown(
-          "### ⚡ Метрики скорости и токенов текущей веб-сессии (Groq +"
-          " Qdrant)"
-      )
-
-      df_m = pd.DataFrame(st.session_state.metrics_history)
-
-      total_reqs = len(df_m)
-      total_tokens = df_m["Всего токенов"].sum()
-      avg_time = round(df_m["Время ответа (сек)"].mean(), 2)
-      avg_qdrant = round(df_m["Поиск Qdrant (мс)"].mean(), 0)
-
-      GROQ_DAILY_LIMIT = 100000
-      tokens_used_pct = round((total_tokens / GROQ_DAILY_LIMIT) * 100, 2)
-      tokens_remaining = GROQ_DAILY_LIMIT - total_tokens
-
-      col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-      col_m1.metric("Запросов в сессии", total_reqs)
-      col_m2.metric("Токенов за сессию", f"{total_tokens:,}")
-      col_m3.metric(
-          "Остаток Groq TPD",
-          f"{tokens_remaining:,}",
-          f"-{tokens_used_pct}% лимита",
-          delta_color="normal",
-      )
-      col_m4.metric("Средний ответ LLM", f"{avg_time} с")
-      col_m5.metric("Средний поиск Qdrant", f"{avg_qdrant:.0f} мс")
-
-      st.caption(
-          f"📊 Расход суточного лимита Groq: **{total_tokens:,}** из"
-          f" **100,000** токенов ({tokens_used_pct}%):"
-      )
-      st.progress(min(total_tokens / GROQ_DAILY_LIMIT, 1.0))
-
-      st.markdown("---")
-
-      col_s1, col_s2 = st.columns(2)
-
-      with col_s1:
-        st.markdown(
-            "##### 📊 Расход токенов по запросам (Prompt vs Generation)"
-        )
-        st.bar_chart(
-            df_m.set_index("Запрос №")[
-                ["Входные токены", "Выходные токены"]
-            ]
-        )
-
-      with col_s2:
-        st.markdown("##### ⏱️ Динамика задержки ответа (в секундах)")
-        st.line_chart(
-            df_m.set_index("Запрос №")[["Время ответа (сек)"]]
-        )
-
-      st.markdown("##### 📜 Подробный журнал сессии")
-      st.dataframe(
-          df_m,
-          column_config={
-              "Запрос №": st.column_config.NumberColumn(
-                  "№", width="small"
-              ),
-              "Входные токены": st.column_config.NumberColumn(
-                  "Входные (Prompt)", format="%d"
-              ),
-              "Выходные токены": st.column_config.NumberColumn(
-                  "Выходные (Gen)", format="%d"
-              ),
-              "Всего токенов": st.column_config.NumberColumn(
-                  "Всего токенов", format="%d"
-              ),
-              "Время ответа (сек)": st.column_config.NumberColumn(
-                  "Время (сек)", format="%.2f s"
-              ),
-              "Поиск Qdrant (мс)": st.column_config.NumberColumn(
-                  "Qdrant (мс)", format="%d ms"
-              ),
-              "Проект": "Проект",
-          },
-          use_container_width=True,
-          hide_index=True,
-      )
-
-# ---------------------------------------------------------------------
-# ВКЛАДКА 5: НАСТРОЙКИ (ЖУРНАЛ ЛОГОВ, КАРТА ПОДКЛЮЧЕНИЙ & БЕЗОПАСНОСТЬ)
-# ---------------------------------------------------------------------
-if "⚙️ Настройки" in tab_dict:
-  with tab_dict["⚙️ Настройки"]:
-    st.subheader("⚙️ Настройки системы и Безопасность")
-
-    sub_tab_logs, sub_tab_map, sub_tab_gaps, sub_tab_users = st.tabs([
-        "📜 Полный Журнал Логов",
-        "🗺️ Карта Входов (GeoIP)",
-        "💡 Пробелы в знаниях & Отзывы",
-        "👥 Управление Аккаунтами",
-    ])
-
-    logs_data = get_audit_logs()
-    df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
-
-    with sub_tab_logs:
+  # --- ВКЛАДКА: ПОЛНЫЙ ЖУРНАЛ ЛОГОВ ---
+  if "📜 Полный Журнал Логов" in s_tab_dict:
+    with s_tab_dict["📜 Полный Журнал Логов"]:
       st.write("История всех действий фиксируется в Qdrant Cloud:")
       if df_logs_all.empty:
         st.info("Журнал аудита пуст.")
@@ -1805,7 +1825,9 @@ if "⚙️ Настройки" in tab_dict:
             use_container_width=True,
         )
 
-    with sub_tab_map:
+  # --- ВКЛАДКА: КАРТА ВХОДОВ ---
+  if "🗺️ Карта Входов (GeoIP)" in s_tab_dict:
+    with s_tab_dict["🗺️ Карта Входов (GeoIP)"]:
       st.markdown("### 🗺️ Интерактивная карта геопозиций входов")
       st.caption(
           "Отображение точек подключения пользователей на основе данных GeoIP:"
@@ -1836,7 +1858,9 @@ if "⚙️ Настройки" in tab_dict:
       else:
         st.info("Нет данных для отображения карты.")
 
-    with sub_tab_gaps:
+  # --- ВКЛАДКА: ПРОБЕЛЫ В ЗНАНИЯХ & ОТЗЫВЫ ---
+  if "💡 Пробелы в знаниях & Отзывы" in s_tab_dict:
+    with s_tab_dict["💡 Пробелы в знаниях & Отзывы"]:
       st.markdown(
           "### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)"
       )
@@ -1883,7 +1907,9 @@ if "⚙️ Настройки" in tab_dict:
               use_container_width=True,
           )
 
-    with sub_tab_users:
+  # --- ВКЛАДКА: УПРАВЛЕНИЕ АККАУНТАМИ ---
+  if "👥 Управление Аккаунтами" in s_tab_dict:
+    with s_tab_dict["👥 Управление Аккаунтами"]:
       st.markdown("### 👥 Список зарегистрированных пользователей")
 
       for login_key, u_info in st.session_state.users_db.items():
