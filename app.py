@@ -43,15 +43,15 @@ CHAT_HISTORY_COLLECTION = "chat_history"
 
 SESSION_TIMEOUT_MINUTES = 15
 
-st.set_page_config(page_title="Gemini AI Enterprise", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Mavbot AI Enterprise", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
 
 # =====================================================================
-# CSS СТИЛИЗАЦИЯ ПОД GEMINI UI
+# CSS СТИЛИЗАЦИЯ (MAVBOT UI)
 # =====================================================================
 st.markdown(
     """
     <style>
-    /* Основной фон и шрифты */
+    /* Основной фон */
     .stApp {
         background-color: #F8Fafd;
     }
@@ -63,38 +63,26 @@ st.markdown(
         pointer-events: none !important;
     }
 
-    /* Стилизация Сайдбара Gemini */
+    /* Стилизация Сайдбара Mavbot */
     section[data-testid="stSidebar"] {
         background-color: #F0F4F9 !important;
         border-right: 1px solid #E1E8ED;
         padding-top: 10px;
     }
 
-    /* Заголовок Gemini UI */
-    .gemini-header {
+    /* Заголовок Mavbot UI */
+    .mavbot-header {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         font-size: 22px;
-        font-weight: 600;
+        font-weight: 700;
         color: #1F1F1F;
-        margin-bottom: 12px;
+        margin-bottom: 15px;
     }
     
-    .gemini-spark {
-        background: linear-gradient(135deg, #4285F4, #9B51E0, #EA4335);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-size: 24px;
-    }
-
-    /* Тэги и переключатель режимов */
-    .pill-switch {
-        background-color: #E2E7EC;
-        border-radius: 20px;
-        padding: 3px;
-        display: flex;
-        margin-bottom: 15px;
+    .mavbot-icon {
+        font-size: 26px;
     }
 
     /* Карточки недавних чатов */
@@ -108,9 +96,9 @@ st.markdown(
         letter-spacing: 0.5px;
     }
 
-    /* Стилизация кнопок недавних чатов */
+    /* Стилизация кнопок сайдбара */
     div[data-testid="stSidebar"] button {
-        border-radius: 20px !important;
+        border-radius: 12px !important;
         border: none !important;
         text-align: left !important;
         font-size: 14px !important;
@@ -147,7 +135,7 @@ st.markdown(
         font-weight: bold;
     }
 
-    /* Кастомный сколлбар */
+    /* Кастомный скроллбар */
     ::-webkit-scrollbar {
         width: 6px;
     }
@@ -377,7 +365,6 @@ def save_system_config(projects, sections):
         print(f"Ошибка сохранения конфига: {e}")
 
 def get_recent_chat_threads(username: str, limit: int = 20) -> list:
-    """Получение списка недавних диалогов для текущего пользователя"""
     try:
         scroll_res, _ = qdrant.scroll(
             collection_name=CHAT_HISTORY_COLLECTION,
@@ -401,7 +388,6 @@ def get_recent_chat_threads(username: str, limit: int = 20) -> list:
         return []
 
 def load_chat_thread_by_id(chat_id: str) -> tuple:
-    """Загрузка сообщений и проекта конкретного диалога по chat_id"""
     try:
         res = qdrant.retrieve(collection_name=CHAT_HISTORY_COLLECTION, ids=[chat_id], with_payload=True)
         if res and res[0].payload:
@@ -412,7 +398,6 @@ def load_chat_thread_by_id(chat_id: str) -> tuple:
     return [], "Общий проект", "Новый чат"
 
 def save_chat_thread(chat_id: str, username: str, project: str, title: str, messages: list):
-    """Сохранение чата с заголовоком в Qdrant"""
     try:
         point = PointStruct(
             id=chat_id,
@@ -429,12 +414,6 @@ def save_chat_thread(chat_id: str, username: str, project: str, title: str, mess
         qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
     except Exception as e:
         print(f"Ошибка сохранения чата: {e}")
-
-def delete_chat_thread(chat_id: str):
-    try:
-        qdrant.delete(collection_name=CHAT_HISTORY_COLLECTION, points_selector=[chat_id])
-    except Exception as e:
-        print(f"Ошибка удаления чата: {e}")
 
 def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
@@ -645,7 +624,7 @@ if st.session_state.logged_in:
 if not st.session_state.logged_in:
     col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
     with col_l2:
-        st.markdown("<h1 style='text-align: center;'>✨ Вход в Gemini AI</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align: center;'>🤖 Вход в Mavbot AI</h1>", unsafe_allow_html=True)
         st.caption("Корпоративная авторизация с контролем безопасности.")
         
         if st.session_state.get("timeout_message"):
@@ -713,7 +692,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 10. GEMINI СТИЛИЗОВАННАЯ БОКОВАЯ ПАНЕЛЬ (SIDEBAR)
+# 10. MAVBOT БОКО ВАЯ ПАНЕЛЬ (SIDEBAR)
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -725,20 +704,11 @@ role_badges = {
 }
 
 with st.sidebar:
-    # 1. Шапка логотипа Gemini
-    st.markdown('<div class="gemini-header"><span class="gemini-spark">✨</span> <span>Gemini</span></div>', unsafe_allow_html=True)
+    # 1. Заголовок логотипа Mavbot
+    st.markdown('<div class="mavbot-header"><span class="mavbot-icon">🤖</span> <span>Mavbot</span></div>', unsafe_allow_html=True)
     
-    # 2. Табы режимов (Начать чат / Spark BETA)
-    mode_tab1, mode_tab2 = st.columns(2)
-    with mode_tab1:
-        st.button("Начать чат", use_container_width=True, key="btn_mode_chat")
-    with mode_tab2:
-        st.button("Spark β", use_container_width=True, key="btn_mode_spark")
-
-    st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
-
-    # 3. Кнопка "Новый чат"
-    if st.button("📝  Новый чат", use_container_width=True, key="btn_new_chat"):
+    # 2. Кнопка "Новый чат"
+    if st.button("➕  Новый чат", use_container_width=True, key="btn_new_chat"):
         st.session_state.active_chat_id = str(uuid.uuid4())
         st.session_state.active_chat_title = "Новый чат"
         st.session_state.messages = [
@@ -746,10 +716,10 @@ with st.sidebar:
         ]
         st.rerun()
 
-    # 4. Поиск по чатам
+    # 3. Поиск по чатам
     search_query = st.text_input("🔍 Поиск по чатам", placeholder="Искать в переписках...", label_visibility="collapsed")
 
-    # 5. Раздел "Блокноты" (Проекты)
+    # 4. Раздел "Блокноты" (Проекты)
     st.markdown('<div class="recent-title">Блокноты</div>', unsafe_allow_html=True)
     
     project_names = list(st.session_state.projects.keys())
@@ -774,7 +744,7 @@ with st.sidebar:
                     st.success(f"Блокнот '{new_proj_name}' создан!")
                     st.rerun()
 
-    # 6. Раздел "Недавние" (Recents)
+    # 5. Раздел "Недавние" (Recents)
     st.markdown('<div class="recent-title">Недавние</div>', unsafe_allow_html=True)
     
     recent_threads = get_recent_chat_threads(user_data["username"])
@@ -789,12 +759,10 @@ with st.sidebar:
             t_id = thread["chat_id"]
             t_title = thread["title"]
             
-            # Обрезка слишком длинных заголовков
             display_title = t_title[:32] + ("..." if len(t_title) > 32 else "")
             
-            # Подсветка активного чата
             is_active = (t_id == st.session_state.active_chat_id)
-            prefix = "💬 " if not is_active else "✨ "
+            prefix = "💬 " if not is_active else "📌 "
             
             if st.button(f"{prefix}{display_title}", key=f"rec_{t_id}", use_container_width=True):
                 st.session_state.active_chat_id = t_id
@@ -807,7 +775,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 7. Карточка пользователя внизу сайдбара
+    # 6. Карточка пользователя внизу сайдбара
     st.markdown(
         f"""
         <div class="user-profile-card">
@@ -844,7 +812,7 @@ with st.sidebar:
 # =====================================================================
 # 11. ОСНОВНОЙ ИНТЕРФЕЙС И ВКЛАДКИ
 # =====================================================================
-st.title(f"✨ Gemini — [{selected_project}]")
+st.title(f"🤖 Mavbot — [{selected_project}]")
 
 tab_titles = ["💬 Чат"]
 
@@ -934,7 +902,6 @@ with tab_dict["💬 Чат"]:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        # Если это первый запрос в чате, сформировать заголовок из первых 35 символов
         if len(st.session_state.messages) <= 3:
             st.session_state.active_chat_title = prompt[:35] + ("..." if len(prompt) > 35 else "")
 
@@ -1037,7 +1004,6 @@ with tab_dict["💬 Чат"]:
                     "Проект": selected_project
                 })
 
-        # СОХРАНЕНИЕ ОБНОВЛЕННОГО ДИАЛОГА В НЕДАВНИЕ (QDRANT)
         save_chat_thread(
             chat_id=st.session_state.active_chat_id,
             username=user_data["username"],
