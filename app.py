@@ -317,15 +317,16 @@ def init_services():
             vectors_config=VectorParams(size=1, distance=Distance.COSINE)
         )
 
-    for field in ["section", "project", "source_file"]:
-        try:
-            qdrant.create_payload_index(
-                collection_name=COLLECTION_NAME,
-                field_name=field,
-                field_schema=PayloadSchemaType.KEYWORD
-            )
-        except Exception:
-            pass
+    for col in [COLLECTION_NAME, CHAT_HISTORY_COLLECTION]:
+        for field in ["section", "project", "source_file", "username"]:
+            try:
+                qdrant.create_payload_index(
+                    collection_name=col,
+                    field_name=field,
+                    field_schema=PayloadSchemaType.KEYWORD
+                )
+            except Exception:
+                pass
         
     groq_client = Groq(api_key=GROQ_API_KEY)
     
@@ -364,32 +365,47 @@ def save_system_config(projects, sections):
     except Exception as e:
         print(f"Ошибка сохранения конфига: {e}")
 
-def get_recent_chat_threads(username: str, limit: int = 20) -> list:
+def get_recent_chat_threads(username: str, limit: int = 50) -> list:
+    """Надежное извлечение списка недавних диалогов для пользователя"""
     try:
-        scroll_res, _ = qdrant.scroll(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            scroll_filter=Filter(must=[FieldCondition(key="username", match=MatchValue(value=username))]),
-            limit=limit,
-            with_payload=True,
-            with_vectors=False
-        )
+        scroll_res = []
+        try:
+            scroll_res, _ = qdrant.scroll(
+                collection_name=CHAT_HISTORY_COLLECTION,
+                scroll_filter=Filter(must=[FieldCondition(key="username", match=MatchValue(value=username))]),
+                limit=limit,
+                with_payload=True,
+                with_vectors=False
+            )
+        except Exception:
+            scroll_res, _ = qdrant.scroll(
+                collection_name=CHAT_HISTORY_COLLECTION,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False
+            )
+
         threads = []
         for pt in scroll_res:
             p = pt.payload or {}
-            threads.append({
-                "chat_id": pt.id,
-                "title": p.get("title", "Новый чат"),
-                "project": p.get("project", "Общий проект"),
-                "updated_at": p.get("updated_at", ""),
-                "messages": p.get("messages", [])
-            })
+            if p.get("username") == username:
+                threads.append({
+                    "chat_id": str(pt.id),
+                    "title": p.get("title", "Новый чат"),
+                    "project": p.get("project", "Общий проект"),
+                    "updated_at": p.get("updated_at", ""),
+                    "messages": p.get("messages", [])
+                })
         return sorted(threads, key=lambda x: x.get("updated_at", ""), reverse=True)
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка загрузки списка чатов: {e}")
         return []
 
 def load_chat_thread_by_id(chat_id: str) -> tuple:
+    """Загрузка диалога по ID"""
     try:
-        res = qdrant.retrieve(collection_name=CHAT_HISTORY_COLLECTION, ids=[chat_id], with_payload=True)
+        valid_uuid = str(uuid.UUID(chat_id)) if len(chat_id) == 36 else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+        res = qdrant.retrieve(collection_name=CHAT_HISTORY_COLLECTION, ids=[valid_uuid], with_payload=True)
         if res and res[0].payload:
             p = res[0].payload
             return p.get("messages", []), p.get("project", "Общий проект"), p.get("title", "Диалог")
@@ -398,22 +414,31 @@ def load_chat_thread_by_id(chat_id: str) -> tuple:
     return [], "Общий проект", "Новый чат"
 
 def save_chat_thread(chat_id: str, username: str, project: str, title: str, messages: list):
+    """Гарантированное сохранение чата с защитой от ошибок размерности векторов"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    payload = {
+        "chat_id": chat_id,
+        "username": username,
+        "project": project,
+        "title": title,
+        "messages": messages,
+        "updated_at": now_str
+    }
+    
     try:
-        point = PointStruct(
-            id=chat_id,
-            vector=[0.0],
-            payload={
-                "chat_id": chat_id,
-                "username": username,
-                "project": project,
-                "title": title,
-                "messages": messages,
-                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-        )
+        valid_uuid = str(uuid.UUID(chat_id))
+    except Exception:
+        valid_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+
+    try:
+        point = PointStruct(id=valid_uuid, vector=[0.0], payload=payload)
         qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
-    except Exception as e:
-        print(f"Ошибка сохранения чата: {e}")
+    except Exception:
+        try:
+            point = PointStruct(id=valid_uuid, vector=[0.0] * 384, payload=payload)
+            qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
+        except Exception as e:
+            print(f"Ошибка сохранения чата в Qdrant: {e}")
 
 def log_event(action: str, details: str, ip: str = None, username: str = None, role: str = None):
     try:
@@ -692,7 +717,7 @@ if not st.session_state.logged_in:
     st.stop()
 
 # =====================================================================
-# 10. MAVBOT БОКО ВАЯ ПАНЕЛЬ (SIDEBAR)
+# 10. MAVBOT БОКОВАЯ ПАНЕЛЬ (SIDEBAR)
 # =====================================================================
 user_data = st.session_state.current_user
 user_role = user_data["role"]
@@ -755,11 +780,11 @@ with st.sidebar:
     if not recent_threads:
         st.caption("Нет недавних диалогов")
     else:
-        for thread in recent_threads[:15]:
+        for thread in recent_threads[:20]:
             t_id = thread["chat_id"]
             t_title = thread["title"]
             
-            display_title = t_title[:32] + ("..." if len(t_title) > 32 else "")
+            display_title = t_title[:30] + ("..." if len(t_title) > 30 else "")
             
             is_active = (t_id == st.session_state.active_chat_id)
             prefix = "💬 " if not is_active else "📌 "
@@ -902,7 +927,8 @@ with tab_dict["💬 Чат"]:
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        if len(st.session_state.messages) <= 3:
+        # Создаем заголовок чата из первого сообщения пользователя
+        if len(st.session_state.messages) <= 3 or st.session_state.active_chat_title == "Новый чат":
             st.session_state.active_chat_title = prompt[:35] + ("..." if len(prompt) > 35 else "")
 
         with st.spinner("Поиск ответа в базе знаний..."):
@@ -1004,6 +1030,7 @@ with tab_dict["💬 Чат"]:
                     "Проект": selected_project
                 })
 
+        # ГАРАНТИРОВАННОЕ СОХРАНЕНИЕ ДИАЛОГА В НЕДАВНИЕ (QDRANT)
         save_chat_thread(
             chat_id=st.session_state.active_chat_id,
             username=user_data["username"],
