@@ -127,6 +127,13 @@ st.markdown(
         color: #1F1F1F !important;
     }
 
+    /* Компактная стилизация меню контекста (три точки) */
+    div[data-testid="stSidebar"] div[data-testid="stPopover"] button {
+        padding: 2px 6px !important;
+        border-radius: 8px !important;
+        font-size: 16px !important;
+    }
+
     /* Карточка профиля внизу */
     .user-profile-card {
         display: flex;
@@ -497,8 +504,20 @@ def get_recent_chat_threads(username: str, limit: int = 50) -> list:
                     "project": p.get("project", "Общий проект"),
                     "updated_at": p.get("updated_at", ""),
                     "messages": p.get("messages", []),
+                    "is_pinned": p.get("is_pinned", False),
                 })
-        return sorted(threads, key=lambda x: x.get("updated_at", ""), reverse=True)
+
+        pinned_threads = sorted(
+            [t for t in threads if t.get("is_pinned")],
+            key=lambda x: x.get("updated_at", ""),
+            reverse=True,
+        )
+        unpinned_threads = sorted(
+            [t for t in threads if not t.get("is_pinned")],
+            key=lambda x: x.get("updated_at", ""),
+            reverse=True,
+        )
+        return pinned_threads + unpinned_threads
     except Exception as e:
         print(f"Ошибка загрузки списка чатов: {e}")
         return []
@@ -532,6 +551,25 @@ def save_chat_thread(
     chat_id: str, username: str, project: str, title: str, messages: list
 ):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Получаем существующие данные (например, is_pinned), чтобы не затереть
+    existing_is_pinned = False
+    try:
+        valid_uuid = (
+            str(uuid.UUID(chat_id))
+            if len(chat_id) == 36
+            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+        )
+        res = qdrant.retrieve(
+            collection_name=CHAT_HISTORY_COLLECTION,
+            ids=[valid_uuid],
+            with_payload=True,
+        )
+        if res and res[0].payload:
+            existing_is_pinned = res[0].payload.get("is_pinned", False)
+    except Exception:
+        pass
+
     payload = {
         "chat_id": chat_id,
         "username": username,
@@ -539,6 +577,7 @@ def save_chat_thread(
         "title": title,
         "messages": messages,
         "updated_at": now_str,
+        "is_pinned": existing_is_pinned,
     }
 
     try:
@@ -555,6 +594,58 @@ def save_chat_thread(
             qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
         except Exception as e:
             print(f"Ошибка сохранения чата в Qdrant: {e}")
+
+
+def toggle_pin_chat_thread(chat_id: str, is_pinned: bool):
+    try:
+        valid_uuid = (
+            str(uuid.UUID(chat_id))
+            if len(chat_id) == 36
+            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+        )
+        qdrant.set_payload(
+            collection_name=CHAT_HISTORY_COLLECTION,
+            payload={"is_pinned": is_pinned},
+            points=[valid_uuid],
+        )
+        log_event("PIN_CHAT", f"Чат '{chat_id}' статус закрепления: {is_pinned}")
+    except Exception as e:
+        print(f"Ошибка закрепления чата: {e}")
+
+
+def rename_chat_thread(chat_id: str, new_title: str):
+    try:
+        valid_uuid = (
+            str(uuid.UUID(chat_id))
+            if len(chat_id) == 36
+            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+        )
+        qdrant.set_payload(
+            collection_name=CHAT_HISTORY_COLLECTION,
+            payload={"title": new_title},
+            points=[valid_uuid],
+        )
+        if st.session_state.active_chat_id == chat_id:
+            st.session_state.active_chat_title = new_title
+        log_event("RENAME_CHAT", f"Чат '{chat_id}' переименован в '{new_title}'")
+    except Exception as e:
+        print(f"Ошибка переименования чата: {e}")
+
+
+def delete_chat_thread(chat_id: str):
+    try:
+        valid_uuid = (
+            str(uuid.UUID(chat_id))
+            if len(chat_id) == 36
+            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+        )
+        qdrant.delete(
+            collection_name=CHAT_HISTORY_COLLECTION,
+            points_selector=[valid_uuid],
+        )
+        log_event("DELETE_CHAT", f"Удален чат ID '{chat_id}'")
+    except Exception as e:
+        print(f"Ошибка удаления чата: {e}")
 
 
 def log_event(
@@ -1037,35 +1128,85 @@ with st.sidebar:
         for thread in recent_threads[:20]:
             t_id = thread["chat_id"]
             t_title = thread["title"]
+            is_pinned = thread.get("is_pinned", False)
 
-            display_title = t_title[:30] + ("..." if len(t_title) > 30 else "")
+            display_title = t_title[:24] + ("..." if len(t_title) > 24 else "")
 
             is_active = (
                 t_id == st.session_state.active_chat_id
                 and st.session_state.view_mode == "chat"
             )
-            prefix = "💬 " if not is_active else "📌 "
+            
+            prefix = "📌 " if is_pinned else ("💬 " if not is_active else "💬 ")
 
-            if st.button(
-                f"{prefix}{display_title}", key=f"rec_{t_id}", use_container_width=True
-            ):
-                st.session_state.view_mode = "chat"
-                st.session_state.active_chat_id = t_id
-                msgs, proj, title_loaded = load_chat_thread_by_id(t_id)
-                st.session_state.messages = (
-                    msgs
-                    if msgs
-                    else [{
-                        "role": "assistant",
-                        "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
-                    }]
-                )
-                st.session_state.active_chat_title = title_loaded
-                st.rerun()
+            c_btn, c_opt = st.columns([5, 1])
 
-    # --- ПОЛЕ 3: КНОПКА "НАСТРОЙКИ" (Перемещена из верхних вкладок в сайдбар) ---
+            with c_btn:
+                if st.button(
+                    f"{prefix}{display_title}", key=f"rec_{t_id}", use_container_width=True
+                ):
+                    st.session_state.view_mode = "chat"
+                    st.session_state.active_chat_id = t_id
+                    msgs, proj, title_loaded = load_chat_thread_by_id(t_id)
+                    st.session_state.messages = (
+                        msgs
+                        if msgs
+                        else [{
+                            "role": "assistant",
+                            "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+                        }]
+                    )
+                    st.session_state.active_chat_title = title_loaded
+                    st.rerun()
+
+            with c_opt:
+                with st.popover("⋮", use_container_width=True):
+                    # 1. 📌 Закрепить / Открепить
+                    pin_btn_label = "📌 Открепить" if is_pinned else "📌 Закрепить"
+                    if st.button(pin_btn_label, key=f"act_pin_{t_id}", use_container_width=True):
+                        toggle_pin_chat_thread(t_id, not is_pinned)
+                        st.rerun()
+
+                    # 2. ✏️ Переименовать
+                    with st.popover("✏️ Переименовать", use_container_width=True):
+                        new_t_title = st.text_input(
+                            "Название:", value=t_title, key=f"ren_input_{t_id}"
+                        )
+                        if st.button("Сохранить", key=f"act_ren_sub_{t_id}", use_container_width=True):
+                            if new_t_title.strip():
+                                rename_chat_thread(t_id, new_t_title.strip())
+                                st.rerun()
+
+                    # 3. 🔗 Поделиться
+                    if st.button("🔗 Поделиться", key=f"act_share_{t_id}", use_container_width=True):
+                        share_url = f"https://mavbot.ai/chat?id={t_id}"
+                        st.toast(f"Ссылка скопирована: {share_url}", icon="🔗")
+
+                    # 4. 📋 Копировать
+                    if st.button("📋 Копировать", key=f"act_copy_{t_id}", use_container_width=True):
+                        msgs, _, _ = load_chat_thread_by_id(t_id)
+                        chat_text = "\n\n".join(
+                            [f"{m['role'].upper()}: {m['content']}" for m in msgs]
+                        )
+                        st.toast("Текст диалога скопирован в буфер!", icon="📋")
+
+                    # 5. 🗑️ Удалить
+                    if st.button("🗑️ Удалить", key=f"act_del_{t_id}", use_container_width=True, type="primary"):
+                        delete_chat_thread(t_id)
+                        if st.session_state.active_chat_id == t_id:
+                            st.session_state.active_chat_id = str(uuid.uuid4())
+                            st.session_state.active_chat_title = "Новый чат"
+                            st.session_state.messages = [{
+                                "role": "assistant",
+                                "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+                            }]
+                        st.rerun()
+
+    # --- РАЗДЕЛИТЕЛЬ СВАЙПБАРА ---
+    st.markdown("---")
+
+    # --- ПОЛЕ: КНОПКА "НАСТРОЙКИ" (Перенесена под <hr />, перед карточкой пользователя) ---
     if user_role in ["admin", "owner"]:
-        st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         btn_settings_label = (
             "⚙️ Настройки"
             if st.session_state.view_mode != "settings"
@@ -1077,7 +1218,7 @@ with st.sidebar:
             st.session_state.view_mode = "settings"
             st.rerun()
 
-    st.markdown("---")
+        st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
     # 6. Карточка пользователя внизу сайдбара
     st.markdown(
