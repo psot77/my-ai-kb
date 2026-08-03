@@ -824,7 +824,7 @@ def fetch_real_estate_listings(
 
         points, _ = qdrant.scroll(
             collection_name=RE_COLLECTION_NAME,
-            limit=200,
+            limit=300,
             scroll_filter=scroll_filter,
             with_payload=True,
             with_vectors=False,
@@ -833,13 +833,24 @@ def fetch_real_estate_listings(
         results = []
         for pt in points:
             p = pt.payload or {}
-            parsed = p.get("parsed_data", {})
-            price = parsed.get("price_usd") or 0
-            area = parsed.get("area_sqm") or 0
+            parsed = p.get("parsed_data") or {}
+
+            # Безопасное приведение цены к числу
+            try:
+                price = float(parsed.get("price_usd") or 0)
+            except (ValueError, TypeError):
+                price = 0.0
+
+            # Безопасное приведение площади к числу
+            try:
+                area = float(parsed.get("area_sqm") or 0)
+            except (ValueError, TypeError):
+                area = 0.0
+
             rooms = parsed.get("rooms")
-            district = (parsed.get("district") or "").lower()
-            address = (parsed.get("address") or "").lower()
-            raw_text = (p.get("raw_text") or "").lower()
+            district = str(parsed.get("district") or "").lower()
+            address = str(parsed.get("address") or "").lower()
+            raw_text = str(p.get("raw_text") or "").lower()
             is_broker = parsed.get("is_broker")
 
             # Фильтрация "Только от хозяина"
@@ -863,10 +874,20 @@ def fetch_real_estate_listings(
 
             # Фильтрация по комнатам
             if rooms_filter != "Все":
-                if rooms_filter == "4+" and (not rooms or rooms < 4):
-                    continue
-                elif rooms_filter != "4+" and str(rooms) != str(rooms_filter):
-                    continue
+                try:
+                    rooms_cnt = int(rooms) if rooms is not None else 0
+                except (ValueError, TypeError):
+                    rooms_cnt = 0
+
+                if rooms_filter == "4+":
+                    if rooms_cnt < 4:
+                        continue
+                else:
+                    try:
+                        if rooms_cnt != int(rooms_filter):
+                            continue
+                    except ValueError:
+                        pass
 
             # Поиск по району / адресу
             if district_query.strip():
@@ -876,9 +897,10 @@ def fetch_real_estate_listings(
 
             results.append(p)
 
-        return sorted(results, key=lambda x: x.get("created_at", ""), reverse=True)
+        # Безопасная сортировка по дате
+        return sorted(results, key=lambda x: str(x.get("created_at") or ""), reverse=True)
     except Exception as e:
-        print(f"Ошибка загрузки объектов недвижимости: {e}")
+        st.error(f"⚠️ Ошибка при выгрузке объектов из Qdrant: {e}")
         return []
 
 
@@ -1629,7 +1651,6 @@ elif st.session_state.view_mode == "real_estate":
         # Горизонтальная панель выпадающих фильтров (Popover Bar)
         col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
 
-        # 1-я колонка: ФИЛЬТР "ОТ СОБСТВЕННИКА" (ОТКЛЮЧЕН ПО УМОЛЧАНИЮ ДЛЯ ПОКАЗА ВСЕХ ОБЪЕКТОВ)
         with col_f1:
             with st.popover("🏡 Собственник ˅", use_container_width=True):
                 st.markdown("**Источник объявления**")
@@ -1702,9 +1723,14 @@ elif st.session_state.view_mode == "real_estate":
             st.info("Объекты не найдены. Измените параметры фильтров или дождитесь новых постов из Telegram.")
         else:
             for item in listings:
-                parsed = item.get("parsed_data", {})
-                price = parsed.get("price_usd")
-                price_str = f"${price:,}" if price else "Цена не указана"
+                parsed = item.get("parsed_data") or {}
+                
+                try:
+                    price_val = float(parsed.get("price_usd") or 0)
+                    price_str = f"${int(price_val):,}" if price_val > 0 else "Цена не указана"
+                except (ValueError, TypeError):
+                    price_str = "Цена не указана"
+
                 deal_lbl = "Аренда" if parsed.get("deal_type") == "rent" else "Продажа"
                 rooms_lbl = f"{parsed.get('rooms')} к." if parsed.get("rooms") else "Комнаты не указаны"
                 area_lbl = f"{parsed.get('area_sqm')} м²" if parsed.get("area_sqm") else ""
@@ -1802,7 +1828,7 @@ else:
             st.session_state.view_mode = "chat"
             st.rerun()
 
-    # Формирование всех вкладок (1: Загрузка документов, Управление файлами, Аналитика + 2: Безопасность и Логи)
+    # Формирование всех вкладок
     settings_tab_titles = []
     if user_role in ["admin", "owner"]:
         settings_tab_titles.extend(
