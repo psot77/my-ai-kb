@@ -70,13 +70,6 @@ st.markdown(
     .stApp {
         background-color: #F8Fafd;
     }
-    
-    /* Скрытие модалок */
-    div[role="dialog"], div[data-testid="stModal"] {
-        display: none !important;
-        visibility: hidden !important;
-        pointer-events: none !important;
-    }
 
     /* Стилизация Сайдбара Mavbot */
     section[data-testid="stSidebar"] {
@@ -552,7 +545,6 @@ def save_chat_thread(
 ):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Получаем существующие данные (например, is_pinned), чтобы не затереть
     existing_is_pinned = False
     try:
         valid_uuid = (
@@ -1137,7 +1129,7 @@ with st.sidebar:
                 and st.session_state.view_mode == "chat"
             )
             
-            prefix = "📌 " if is_pinned else ("💬 " if not is_active else "💬 ")
+            prefix = "📌 " if is_pinned else "💬 "
 
             c_btn, c_opt = st.columns([5, 1])
 
@@ -1168,7 +1160,7 @@ with st.sidebar:
                         st.rerun()
 
                     # 2. ✏️ Переименовать
-                    with st.popover("✏️ Переименовать", use_container_width=True):
+                    with st.expander("✏️ Переименовать"):
                         new_t_title = st.text_input(
                             "Название:", value=t_title, key=f"ren_input_{t_id}"
                         )
@@ -1205,7 +1197,7 @@ with st.sidebar:
     # --- РАЗДЕЛИТЕЛЬ СВАЙПБАРА ---
     st.markdown("---")
 
-    # --- ПОЛЕ: КНОПКА "НАСТРОЙКИ" (Перенесена под <hr />, перед карточкой пользователя) ---
+    # --- ПОЛЕ: КНОПКА "НАСТРОЙКИ" (Под <hr />, перед карточкой пользователя) ---
     if user_role in ["admin", "owner"]:
         btn_settings_label = (
             "⚙️ Настройки"
