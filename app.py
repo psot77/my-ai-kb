@@ -172,6 +172,7 @@ st.markdown(
         border-radius: 6px;
         font-size: 12px;
         font-weight: 600;
+        margin-left: 4px;
     }
     .re-badge-owner {
         background-color: #e6f4ea;
@@ -180,6 +181,7 @@ st.markdown(
         border-radius: 6px;
         font-size: 12px;
         font-weight: 600;
+        margin-left: 4px;
     }
 
     /* Кастомный скроллбар */
@@ -1625,7 +1627,7 @@ elif st.session_state.view_mode == "real_estate":
         # Горизонтальная панель выпадающих фильтров (Popover Bar)
         col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
 
-        # 1-я колонка: ФИЛЬТР "ОТ СОБСТВЕННИКА" НА ПЕРВОМ МЕСТЕ
+        # 1-я колонка: ФИЛЬТР "ОТ СОБСТВЕННИКА" НА ПЕРВОМ МЕСТЕ (ВКЛЮЧЕН ПО УМОЛЧАНИЮ)
         with col_f1:
             with st.popover("🏡 Собственник ˅", use_container_width=True):
                 st.markdown("**Источник объявления**")
@@ -1678,7 +1680,7 @@ elif st.session_state.view_mode == "real_estate":
         if active_tags:
             st.caption("Активные фильтры: " + " | ".join([f"`{tag}`" for tag in active_tags]))
 
-        # Загрузка объектов
+        # Загрузка объектов из Qdrant
         listings = fetch_real_estate_listings(
             deal_type=f_deal_type,
             property_type=f_prop_type,
@@ -1715,28 +1717,25 @@ elif st.session_state.view_mode == "real_estate":
                     else '<span class="re-badge">👔 Риелтор / Агентство</span>'
                 )
 
-                st.markdown(
-                    f"""
-                    <div class="re-card">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <span class="re-price">{price_str}</span>
-                            <div>
-                                <span class="re-badge">{deal_lbl}</span>
-                                <span class="re-badge">{rooms_lbl}</span>
-                                {f'<span class="re-badge">{area_lbl}</span>' if area_lbl else ''}
-                                {broker_tag}
-                            </div>
-                        </div>
-                        <div style="margin-top: 8px; font-weight: 600; color: #3c4043;">
-                            📍 {district_lbl} {f'— {address_lbl}' if address_lbl else ''}
-                        </div>
-                        <div style="margin-top: 4px; font-size: 13px; color: #5f6368;">
-                            📞 {phone_lbl} | 💬 Канал: <b>{item.get('channel', 'Telegram')}</b> | 🕒 {item.get('created_at', '')}
-                        </div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                card_html = f"""<div class="re-card">
+<div style="display: flex; justify-content: space-between; align-items: center;">
+<span class="re-price">{price_str}</span>
+<div>
+<span class="re-badge">{deal_lbl}</span>
+<span class="re-badge">{rooms_lbl}</span>
+{f'<span class="re-badge">{area_lbl}</span>' if area_lbl else ''}
+{broker_tag}
+</div>
+</div>
+<div style="margin-top: 8px; font-weight: 600; color: #3c4043;">
+📍 {district_lbl} {f'— {address_lbl}' if address_lbl else ''}
+</div>
+<div style="margin-top: 4px; font-size: 13px; color: #5f6368;">
+📞 {phone_lbl} | 💬 Канал: <b>{item.get('channel', 'Telegram')}</b> | 🕒 {item.get('created_at', '')}
+</div>
+</div>"""
+
+                st.markdown(card_html, unsafe_allow_html=True)
 
                 with st.expander("📄 Описание из Telegram"):
                     st.text(item.get("raw_text", ""))
