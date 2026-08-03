@@ -22,7 +22,6 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
     PointStruct,
-    Range,
     VectorParams,
 )
 from reportlab.lib.pagesizes import letter
@@ -122,7 +121,7 @@ st.markdown(
         color: #1F1F1F !important;
     }
 
-    /* Компактная стилизация меню контекста (три точки) */
+    /* Компактная стилизация меню контекста */
     div[data-testid="stSidebar"] div[data-testid="stPopover"] button {
         padding: 2px 6px !important;
         border-radius: 8px !important;
@@ -801,12 +800,23 @@ def get_db_files_summary():
         return {}
 
 
-def fetch_real_estate_listings(deal_type="Все", max_price=5000, rooms_filter="Все", owner_only=False, district_query=""):
+def fetch_real_estate_listings(
+    deal_type="Усі",
+    property_type="Усі",
+    min_price=0,
+    max_price=500000,
+    min_area=0,
+    max_area=1000,
+    rooms_filter="Усі",
+    owner_only=False,
+    district_query="",
+):
     try:
         must_conditions = []
 
-        if deal_type != "Все":
-            must_conditions.append(FieldCondition(key="deal_type", match=MatchValue(value=deal_type.lower())))
+        if deal_type != "Усі":
+            deal_val = "rent" if "Оренд" in deal_type else "sale"
+            must_conditions.append(FieldCondition(key="deal_type", match=MatchValue(value=deal_val)))
 
         if owner_only:
             must_conditions.append(FieldCondition(key="parsed_data.is_broker", match=MatchValue(value=False)))
@@ -815,7 +825,7 @@ def fetch_real_estate_listings(deal_type="Все", max_price=5000, rooms_filter=
 
         points, _ = qdrant.scroll(
             collection_name=RE_COLLECTION_NAME,
-            limit=50,
+            limit=100,
             scroll_filter=scroll_filter,
             with_payload=True,
             with_vectors=False,
@@ -826,16 +836,29 @@ def fetch_real_estate_listings(deal_type="Все", max_price=5000, rooms_filter=
             p = pt.payload or {}
             parsed = p.get("parsed_data", {})
             price = parsed.get("price_usd") or 0
+            area = parsed.get("area_sqm") or 0
             rooms = parsed.get("rooms")
             district = (parsed.get("district") or "").lower()
             address = (parsed.get("address") or "").lower()
+            raw_text = (p.get("raw_text") or "").lower()
 
-            # Фильтрация по цене
-            if price > max_price:
+            # Фильтрация по цене (Min - Max)
+            if price > 0 and (price < min_price or price > max_price):
                 continue
 
+            # Фильтрация по площади (Min - Max)
+            if area > 0 and (area < min_area or area > max_area):
+                continue
+
+            # Фильтрация по типу недвижимости (Квартира, Будинок и т.д.)
+            if property_type != "Усі":
+                prop_key = property_type.lower()[:5]  # берем корень слова для поиска
+                combined_text = f"{district} {address} {raw_text}"
+                if prop_key not in combined_text:
+                    continue
+
             # Фильтрация по комнатам
-            if rooms_filter != "Все":
+            if rooms_filter != "Усі":
                 if rooms_filter == "4+" and (not rooms or rooms < 4):
                     continue
                 elif rooms_filter != "4+" and str(rooms) != str(rooms_filter):
@@ -844,7 +867,7 @@ def fetch_real_estate_listings(deal_type="Все", max_price=5000, rooms_filter=
             # Поиск по району / адресу
             if district_query.strip():
                 dq = district_query.strip().lower()
-                if dq not in district and dq not in address:
+                if dq not in district and dq not in address and dq not in raw_text:
                     continue
 
             results.append(p)
@@ -1590,59 +1613,105 @@ if st.session_state.view_mode == "chat":
 
 elif st.session_state.view_mode == "real_estate":
     # ---------------------------------------------------------------------
-    # РЕЖИМ 2: БАЗА НЕДВИЖИМОСТИ (TELEGRAM PARSER DATABASE)
+    # РЕЖИМ 2: БАЗА НЕДВИЖИМОСТИ С ВЫПАДАЮЩИМИ ФИЛЬТРАМИ (DIM.RIA STYLE)
     # ---------------------------------------------------------------------
     st.title("🏠 Мониторинг Недвижимости Telegram")
-    st.caption("База объектов, скомпилированная в реальном времени с проверкой дубликатов.")
+    st.caption("База объектов в реальном времени с интерактивными фильтрами поиска.")
 
     re_tabs = st.tabs(["📊 База объектов и фильтры", "🤖 AI-Подбор под запрос"])
 
     # --- ВКЛАДКА 1: БАЗА ОБЪЕКТОВ ---
     with re_tabs[0]:
-        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns([2, 2, 2, 2, 2])
+        # Горизонтальная панель выпадающих фильтров (Popover Bar)
+        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
 
         with col_f1:
-            f_deal_type = st.selectbox("Тип сделки:", ["Все", "Rent", "Sale"], key="re_f_deal")
-        with col_f2:
-            f_rooms = st.selectbox("Комнат:", ["Все", "1", "2", "3", "4+"], key="re_f_rooms")
-        with col_f3:
-            f_max_price = st.slider("Макс. цена ($):", min_value=100, max_value=10000, value=3000, step=100, key="re_f_price")
-        with col_f4:
-            f_district = st.text_input("Район / Улица:", placeholder="Печерский, Франка...", key="re_f_district")
-        with col_f5:
-            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-            f_owner_only = st.checkbox("🏡 Только от хозяина", value=False, key="re_f_owner")
+            with st.popover("🏠 Тип об'єкта ˅", use_container_width=True):
+                st.markdown("**Угода та нерухомість**")
+                f_deal_type = st.radio("Тип угоди:", ["Усі", "Купити", "Орендувати"], key="re_pop_deal")
+                f_prop_type = st.selectbox(
+                    "Тип об'єкта:",
+                    ["Усі", "Квартира", "Будинок", "Кімната", "Комерційна", "Ділянка", "Гараж"],
+                    key="re_pop_prop"
+                )
 
+        with col_f2:
+            with st.popover("💰 Ціна ($) ˅", use_container_width=True):
+                st.markdown("**Діапазон цін (USD)**")
+                c_p1, c_p2 = st.columns(2)
+                with c_p1:
+                    f_min_price = st.number_input("Від ($):", min_value=0, max_value=500000, value=0, step=100, key="re_pop_pmin")
+                with c_p2:
+                    f_max_price = st.number_input("До ($):", min_value=0, max_value=1000000, value=5000, step=500, key="re_pop_pmax")
+
+        with col_f3:
+            with st.popover("🚪 Кімнати ˅", use_container_width=True):
+                st.markdown("**Кількість кімнат**")
+                f_rooms = st.radio("Кімнат:", ["Усі", "1", "2", "3", "4+"], key="re_pop_rooms")
+
+        with col_f4:
+            with st.popover("📐 Площа (м²) ˅", use_container_width=True):
+                st.markdown("**Площа об'єкта (м²)**")
+                c_a1, c_a2 = st.columns(2)
+                with c_a1:
+                    f_min_area = st.number_input("Від (м²):", min_value=0, max_value=2000, value=0, step=5, key="re_pop_amin")
+                with c_a2:
+                    f_max_area = st.number_input("До (м²):", min_value=0, max_value=2000, value=500, step=10, key="re_pop_amax")
+
+        with col_f5:
+            with st.popover("⚙️ Фільтри ˅", use_container_width=True):
+                st.markdown("**Додаткові параметри**")
+                f_district = st.text_input("Район / Вулиця / ЖК:", placeholder="Печерський, Франка...", key="re_pop_district")
+                f_owner_only = st.checkbox("🏡 Тільки від власника", value=False, key="re_pop_owner")
+
+        # Вывод меток активных фильтров
+        active_tags = []
+        if f_deal_type != "Усі": active_tags.append(f"Угода: {f_deal_type}")
+        if f_prop_type != "Усі": active_tags.append(f"Тип: {f_prop_type}")
+        if f_min_price > 0 or f_max_price < 1000000: active_tags.append(f"Ціна: ${f_min_price} - ${f_max_price}")
+        if f_rooms != "Усі": active_tags.append(f"Кімнат: {f_rooms}")
+        if f_min_area > 0 or f_max_area < 500: active_tags.append(f"Площа: {f_min_area} - {f_max_area} м²")
+        if f_district.strip(): active_tags.append(f"Пошук: '{f_district.strip()}'")
+        if f_owner_only: active_tags.append("Від власника")
+
+        if active_tags:
+            st.caption("Активні фільтри: " + " | ".join([f"`{tag}`" for tag in active_tags]))
+
+        # Загрузка объектов
         listings = fetch_real_estate_listings(
             deal_type=f_deal_type,
+            property_type=f_prop_type,
+            min_price=f_min_price,
             max_price=f_max_price,
+            min_area=f_min_area,
+            max_area=f_max_area,
             rooms_filter=f_rooms,
             owner_only=f_owner_only,
             district_query=f_district,
         )
 
-        st.markdown(f"Найдено уникальных объектов: **{len(listings)}**")
+        st.markdown(f"Знайдено унікальних об'єктів: **{len(listings)}**")
         st.divider()
 
         if not listings:
-            st.info("Объекты не найдены. Измените параметры фильтров или дождитесь новых постов из Telegram.")
+            st.info("Об'єкти не знайдені. Змініть параметри фільтрів або зачекайте нових постів з Telegram.")
         else:
             for item in listings:
                 parsed = item.get("parsed_data", {})
                 price = parsed.get("price_usd")
-                price_str = f"${price:,}" if price else "Цена не указана"
-                deal_lbl = "Аренда" if parsed.get("deal_type") == "rent" else "Продажа"
-                rooms_lbl = f"{parsed.get('rooms')} к." if parsed.get("rooms") else "Комнаты не указаны"
+                price_str = f"${price:,}" if price else "Ціна не вказана"
+                deal_lbl = "Оренда" if parsed.get("deal_type") == "rent" else "Продаж"
+                rooms_lbl = f"{parsed.get('rooms')} к." if parsed.get("rooms") else "Кімнати не вказані"
                 area_lbl = f"{parsed.get('area_sqm')} м²" if parsed.get("area_sqm") else ""
-                district_lbl = parsed.get("district") or "Район не указан"
+                district_lbl = parsed.get("district") or "Район не вказаний"
                 address_lbl = parsed.get("address") or ""
-                phone_lbl = parsed.get("phone") or "Телефон не указан"
+                phone_lbl = parsed.get("phone") or "Телефон не вказаний"
                 is_broker = parsed.get("is_broker")
 
                 broker_tag = (
-                    '<span class="re-badge-owner">🏡 От хозяина</span>'
+                    '<span class="re-badge-owner">🏡 Від власника</span>'
                     if is_broker is False
-                    else '<span class="re-badge">👔 Риелтор / Агентство</span>'
+                    else '<span class="re-badge">👔 Ріелтор / Агентство</span>'
                 )
 
                 st.markdown(
@@ -1668,20 +1737,20 @@ elif st.session_state.view_mode == "real_estate":
                     unsafe_allow_html=True,
                 )
 
-                with st.expander("📄 Исходный текст поста"):
+                with st.expander("📄 Описовий текст з Telegram"):
                     st.text(item.get("raw_text", ""))
 
     # --- ВКЛАДКА 2: AI ПОДБОР ---
     with re_tabs[1]:
-        st.subheader("🤖 Интеллектуальный поиск квартир по всей базе")
+        st.subheader("🤖 Інтелектуальний пошук квартир за запитом")
         ai_re_prompt = st.text_input(
-            "Опишите желаемый объект человеческим языком:",
-            placeholder="Например: Найди тихую 2-комнатную на Печерске или Шевченковском до $1200 с хорошим ремонтом",
+            "Опишіть бажаний об'єкт звичайними словами:",
+            placeholder="Наприклад: Знайди тиху 2-кімнатну на Печерську до $1200 з хорошим ремонтом",
             key="input_ai_re_prompt",
         )
 
-        if ai_re_prompt and st.button("🔍 Найти подходящие варианты", use_container_width=True):
-            with st.spinner("Векторный поиск по базе недвижимости + анализ Groq..."):
+        if ai_re_prompt and st.button("🔍 Знайти відповідні варіанти", use_container_width=True):
+            with st.spinner("Векторний пошук по базі нерухомості + аналіз Groq..."):
                 query_vec = get_cloud_embedding(ai_re_prompt)
                 try:
                     search_res = qdrant.query_points(
@@ -1689,16 +1758,16 @@ elif st.session_state.view_mode == "real_estate":
                     ).points
 
                     if not search_res:
-                        st.warning("К сожалению, подходящих вариантов в базе пока нет.")
+                        st.warning("На жаль, відповідних варіантів у базі поки немає.")
                     else:
                         context_blocks = []
                         for hit in search_res:
                             p = hit.payload or {}
                             parsed = p.get("parsed_data", {})
                             context_blocks.append(
-                                f"Объект: {parsed.get('deal_type')}, Комнат: {parsed.get('rooms')}, "
-                                f"Цена: ${parsed.get('price_usd')}, Район: {parsed.get('district')}, "
-                                f"Адрес: {parsed.get('address')}, Описание: {p.get('raw_text', '')}"
+                                f"Об'єкт: {parsed.get('deal_type')}, Кімнат: {parsed.get('rooms')}, "
+                                f"Ціна: ${parsed.get('price_usd')}, Район: {parsed.get('district')}, "
+                                f"Адреса: {parsed.get('address')}, Опис: {p.get('raw_text', '')}"
                             )
 
                         llm_re_prompt = f"""Ты — профессиональный риелтор-консультант.
