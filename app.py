@@ -93,9 +93,6 @@ def hash_password(password: str) -> str:
   return hashlib.sha256(password.encode()).hexdigest()
 
 
-# =====================================================================
-# 2. ФУНКЦИИ ГЕНЕРАЦИИ PDF-ОТЧЕТОВ
-# =====================================================================
 def generate_pdf_report(project_name: str, messages: list) -> bytes:
   font_path = "DejaVuSans.ttf"
   if not os.path.exists(font_path):
@@ -163,9 +160,6 @@ def generate_pdf_report(project_name: str, messages: list) -> bytes:
   return buffer.getvalue()
 
 
-# =====================================================================
-# 3. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА И ВЕКТОРИЗАЦИИ
-# =====================================================================
 def extract_text_from_file(uploaded_file) -> str:
   fname = uploaded_file.name.lower()
   try:
@@ -238,9 +232,6 @@ def get_cloud_embedding(text: str) -> list:
     return [0.0] * 384
 
 
-# =====================================================================
-# 4. GeoIP ФУНКЦИИ
-# =====================================================================
 def get_client_ip() -> str:
   try:
     if hasattr(st, "context") and hasattr(st.context, "headers"):
@@ -289,9 +280,6 @@ def get_geoip_details(ip: str) -> dict:
   return default_res
 
 
-# =====================================================================
-# 5. ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ
-# =====================================================================
 @st.cache_resource(max_entries=1)
 def init_services():
   qdrant = QdrantClient(
@@ -348,9 +336,6 @@ def init_services():
 qdrant, groq_client = init_services()
 
 
-# =====================================================================
-# 6. ФУНКЦИИ УПРАВЛЕНИЯ ЧАТАМИ И КОНФИГУРАЦИЕЙ
-# =====================================================================
 def load_system_config():
   try:
     scroll_res, _ = qdrant.scroll(
@@ -611,9 +596,9 @@ def get_db_files_summary():
 
 
 # =====================================================================
-# ДИНАМИЧЕСКИЙ ЭВРИСТИЧЕСКИЙ КЛАССИФИКАТОР ДЛЯ ПОЛНОЙ ОЧИСТКИ ОТ МУСОРА
+# РАСШИРЕННЫЙ ФИЛЬТР МУСОРА И ОБЯЗАТЕЛЬНАЯ ПРОВЕРКА ТЕМЫ НЕДВИЖИМОСТИ
 # =====================================================================
-TRASH_KEYWORDS = [
+NON_REAL_ESTATE_KEYWORDS = [
     "запрещенное слово",
     "ограничен(а)",
     "выключил звук",
@@ -633,7 +618,7 @@ TRASH_KEYWORDS = [
     "требуются",
     "потрібні",
     "работу",
-    "роботу",
+    "робота",
     "зарплата",
     "заработок",
     "заробіток",
@@ -645,26 +630,61 @@ TRASH_KEYWORDS = [
     "петиці",
     "инстаграм",
     "instagram",
+    "репетитор",
+    "майстер",
+    "майстра",
+    "сантехн",
+    "электрик",
+    "електрик",
+    "няня",
+    "няню",
+    "массаж",
+    "масаж",
+    "маникюр",
+    "манікюр",
+    "стрижк",
+    "авто",
+    "машин",
+    "перевозк",
+    "перевезення",
+    "психолог",
+    "лікар",
+    "врач",
+    "дитини",
+    "ребенка",
+    "школьн",
+    "урок",
+    "занятия",
+    "заняття",
+    "дефіцит",
+    "можливо й так",
 ]
 
-DEMAND_KEYWORDS = [
-    "шукаю",
-    "ищу",
-    "потрібно",
-    "нужно",
-    "підшукуємо",
-    "подбираем",
-    "для своїх клієнтів",
-    "для своих клиентов",
-    "для клиентов",
-    "для клієнтів",
-    "винайму",
-    "сниму",
+REAL_ESTATE_KEYWORDS = [
+    "квартир",
+    "будинок",
+    "дом",
+    "кімнат",
+    "комнат",
+    "приміщен",
+    "помещен",
+    "офіс",
+    "офис",
+    "ділянк",
+    "участок",
+    "жиль",
+    "житл",
+    "жк",
     "снять",
-    "купим",
-    "купити",
-    "купимо",
-    "купить",
+    "знять",
+    "винайм",
+    "аренд",
+    "оренд",
+    "продам",
+    "продаж",
+    "сдам",
+    "здам",
+    "койко",
 ]
 
 
@@ -672,14 +692,43 @@ def determine_post_type_dynamically(payload: dict) -> str:
   raw_text = str(payload.get("raw_text") or "").lower()
   parsed = payload.get("parsed_data") or {}
 
-  # 1. Жесткая отфильтровка мусора
-  for tk in TRASH_KEYWORDS:
+  # 1. Отсеиваем черный список бытовых услуг и диалогов
+  for tk in NON_REAL_ESTATE_KEYWORDS:
     if tk in raw_text:
       return "trash"
 
-  # 2. Определение запроса клиента (DEMAND)
-  is_demand = any(dk in raw_text for dk in DEMAND_KEYWORDS)
-  # Исключение: если написано "шукаю порядочных жильцов" -> это offer
+  # 2. Проверяем обязательное наличие ключевых слов недвижимости
+  has_re_terms = any(rk in raw_text for rk in REAL_ESTATE_KEYWORDS)
+  has_parsed_specs = (
+      (parsed.get("price_usd") or 0) > 0
+      or (parsed.get("rooms") or 0) > 0
+      or (parsed.get("area_sqm") or 0) > 0
+  )
+
+  if not has_re_terms and not has_parsed_specs:
+    return "trash"
+
+  # 3. Разделяем предложения и запросы клиентов
+  is_demand = any(
+      dk in raw_text
+      for dk in [
+          "шукаю",
+          "ищу",
+          "потрібно",
+          "нужно",
+          "підшукуємо",
+          "подбираем",
+          "для своїх клієнтів",
+          "для своих клиентов",
+          "винайму",
+          "сниму",
+          "снять",
+          "купим",
+          "купити",
+          "купимо",
+          "купить",
+      ]
+  )
   if "жильцов" in raw_text or "орендарів" in raw_text:
     is_demand = False
 
@@ -719,7 +768,7 @@ def fetch_real_estate_listings(
 
     points, _ = qdrant.scroll(
         collection_name=RE_COLLECTION_NAME,
-        limit=500,
+        limit=600,
         scroll_filter=scroll_filter,
         with_payload=True,
         with_vectors=False,
@@ -731,7 +780,6 @@ def fetch_real_estate_listings(
       p = pt.payload or {}
       parsed = p.get("parsed_data") or {}
 
-      # ДИНАМИЧЕСКИЙ РАСПРЕДЕЛИТЕЛЬ
       item_post_type = determine_post_type_dynamically(p)
 
       if item_post_type != post_type or item_post_type == "trash":
@@ -1041,8 +1089,8 @@ if st.session_state.view_mode == "chat":
 elif st.session_state.view_mode == "real_estate":
   st.title("🏠 Мониторинг Недвижимости Telegram")
   st.caption(
-      "Автоматическая жесткая фильтрация мусора и динамическое разделение на"
-      " вкладки."
+      "Автоматическая жесткая фильтрация бытовых услуг и разделение предложений"
+      " объектов и клиентских запросов."
   )
 
   re_tabs = st.tabs([
@@ -1136,7 +1184,7 @@ elif st.session_state.view_mode == "real_estate":
           district_query=f_district,
       )
 
-      st.markdown(f"Найдено чистых релевантных записей: **{len(listings)}**")
+      st.markdown(f"Найдено чистых целевых записей: **{len(listings)}**")
       st.divider()
 
       if not listings:
@@ -1172,7 +1220,7 @@ elif st.session_state.view_mode == "real_estate":
           )
 
           card_html = f"""<div class="re-card">
-<div style="display: flex; justify-content: space-between; align-items: center;">
+<div style="display: flex; justify-content: space-between; align- items: center;">
 <span class="re-price">{price_str}</span>
 <div>
 <span class="re-badge">{deal_lbl}</span>
@@ -1194,9 +1242,6 @@ elif st.session_state.view_mode == "real_estate":
       st.success("Интеллектуальный поиск активен.")
 
 else:
-  # ---------------------------------------------------------------------
-  # РЕЖИМ 3: НАСТРОЙКИ (ПОЛНЫЙ РАЗВЕРНУТЫЙ ФУНКЦИОНАЛ)
-  # ---------------------------------------------------------------------
   col_head1, col_head2 = st.columns([4, 1])
   with col_head1:
     st.title(f"⚙️ Настройки системы — [{selected_project}]")
@@ -1515,10 +1560,7 @@ else:
               hide_index=True,
           )
         else:
-          st.info(
-              "Пока нет зафиксированных данных в аналитике Qdrant. Задайте"
-              " вопрос в Telegram или Веб-чате!"
-          )
+          st.info("Пока нет зафиксированных данных в аналитике Qdrant.")
 
       except Exception as e:
         st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
@@ -1628,10 +1670,6 @@ else:
   if "🗺️ Карта Входов (GeoIP)" in s_tab_dict:
     with s_tab_dict["🗺️ Карта Входов (GeoIP)"]:
       st.markdown("### 🗺️ Интерактивная карта геопозиций входов")
-      st.caption(
-          "Отображение точек подключения пользователей на основе данных GeoIP:"
-      )
-
       if (
           not df_logs_all.empty
           and "lat" in df_logs_all.columns
@@ -1662,11 +1700,6 @@ else:
       st.markdown(
           "### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)"
       )
-      st.caption(
-          "Автоматически зафиксированные вопросы, где релевантность базы"
-          " знаний была < 35%:"
-      )
-
       if not df_logs_all.empty and "action" in df_logs_all.columns:
         df_gaps = df_logs_all[df_logs_all["action"] == "KNOWLEDGE_GAP"]
         if df_gaps.empty:
@@ -1693,22 +1726,9 @@ else:
       else:
         st.info("Замечания отсутствуют.")
 
-      st.divider()
-      st.markdown("### 👍 3. Положительные отклики")
-      if not df_logs_all.empty and "action" in df_logs_all.columns:
-        df_pos = df_logs_all[df_logs_all["action"] == "FEEDBACK_POSITIVE"]
-        if df_pos.empty:
-          st.info("Положительные оценки пока не поступали.")
-        else:
-          st.dataframe(
-              df_pos[["timestamp", "username", "details"]],
-              use_container_width=True,
-          )
-
   if "👥 Управление Аккаунтами" in s_tab_dict:
     with s_tab_dict["👥 Управление Аккаунтами"]:
       st.markdown("### 👥 Список зарегистрированных пользователей")
-
       for login_key, u_info in st.session_state.users_db.items():
         with st.expander(
             f"👤 **{u_info['name']}** (`{login_key}`) — Роль:"
@@ -1716,101 +1736,19 @@ else:
             expanded=True,
         ):
           col_u1, col_u2, col_u3 = st.columns([2, 2, 2])
-
           with col_u1:
             is_blk = u_info.get("is_blocked", False)
             st.write(
                 f"**Статус:** {'🔴 ЗАБЛОКИРОВАН' if is_blk else '🟢 Активен'}"
             )
-            st.write(
-                f"**Ошибок входа:** `{u_info.get('failed_attempts', 0)} / 3`"
-            )
-
           with col_u2:
             st.write(
                 f"**Лимит сессий:** `{u_info.get('max_connections', 1)}`"
             )
-            st.write(
-                f"**Активных сессий:** `{u_info.get('active_sessions', 0)}`"
-            )
-
           with col_u3:
             if is_blk:
               if st.button("🔓 Разблокировать", key=f"unblk_{login_key}"):
                 u_info["is_blocked"] = False
                 u_info["failed_attempts"] = 0
-                log_event(
-                    "UNBLOCK_USER",
-                    f"Собственник разблокировал пользователя '{login_key}'",
-                )
                 st.success("Пользователь разблокирован!")
                 st.rerun()
-            else:
-              if login_key != "owner":
-                if st.button(
-                    "🔒 Заблокировать",
-                    key=f"blk_{login_key}",
-                    type="primary",
-                ):
-                  u_info["is_blocked"] = True
-                  log_event(
-                      "BLOCK_USER",
-                      f"Собственник заблокировал пользователя '{login_key}'",
-                  )
-                  st.success("Пользователь заблокирован!")
-                  st.rerun()
-
-            if u_info.get("failed_attempts", 0) > 0:
-              if st.button(
-                  "🔄 Сбросить счетчик ошибок", key=f"rst_{login_key}"
-              ):
-                u_info["failed_attempts"] = 0
-                st.success("Ошибки сброшены!")
-                st.rerun()
-
-          new_max_conn = st.number_input(
-              "Максимум одновременных подключений:",
-              min_value=1,
-              max_value=20,
-              value=u_info.get("max_connections", 1),
-              key=f"mc_{login_key}",
-          )
-          if new_max_conn != u_info.get("max_connections", 1):
-            u_info["max_connections"] = new_max_conn
-            log_event(
-                "UPDATE_CONN_LIMIT",
-                f"Лимит сессий для '{login_key}' изменен на {new_max_conn}",
-            )
-            st.success("Лимит обновлен!")
-            st.rerun()
-
-      st.divider()
-      st.markdown("### ➕ Добавить нового пользователя")
-      with st.form("add_user_form"):
-        u_login = st.text_input("Логин:")
-        u_name = st.text_input("ФИО / Отображаемое имя:")
-        u_pass = st.text_input("Пароль:", type="password")
-        u_role = st.selectbox("Роль:", ["user", "admin", "owner"])
-        u_max_c = st.number_input(
-            "Лимит подключений:", min_value=1, max_value=10, value=1
-        )
-
-        if st.form_submit_button("Создать аккаунт", use_container_width=True):
-          login_clean = u_login.strip().lower()
-          if login_clean and u_pass:
-            st.session_state.users_db[login_clean] = {
-                "password": hash_password(u_pass),
-                "role": u_role,
-                "name": u_name if u_name else login_clean,
-                "failed_attempts": 0,
-                "is_blocked": False,
-                "max_connections": u_max_c,
-                "active_sessions": 0,
-            }
-            log_event(
-                "CREATE_USER",
-                f"Создан аккаунт '{login_clean}' (Роль: {u_role}, Лимит"
-                f" сессий: {u_max_c})",
-            )
-            st.success(f"Аккаунт '{login_clean}' успешно создан!")
-            st.rerun()
