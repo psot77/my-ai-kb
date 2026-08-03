@@ -22,6 +22,7 @@ from qdrant_client.models import (
     MatchValue,
     PayloadSchemaType,
     PointStruct,
+    Range,
     VectorParams,
 )
 from reportlab.lib.pagesizes import letter
@@ -50,6 +51,7 @@ LOGS_COLLECTION = "audit_logs"
 ANALYTICS_COLLECTION = "analytics_logs"
 CONFIG_COLLECTION = "system_config"
 CHAT_HISTORY_COLLECTION = "chat_history"
+RE_COLLECTION_NAME = "real_estate_listings"
 
 SESSION_TIMEOUT_MINUTES = 15
 
@@ -148,6 +150,37 @@ st.markdown(
         align-items: center;
         justify-content: center;
         font-weight: bold;
+    }
+
+    /* Карточки недвижимости */
+    .re-card {
+        background-color: #FFFFFF;
+        border: 1px solid #E1E8ED;
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 12px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+    }
+    .re-price {
+        font-size: 20px;
+        font-weight: 700;
+        color: #1a73e8;
+    }
+    .re-badge {
+        background-color: #e8f0fe;
+        color: #1967d2;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    .re-badge-owner {
+        background-color: #e6f4ea;
+        color: #137333;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 12px;
+        font-weight: 600;
     }
 
     /* Кастомный скроллбар */
@@ -311,13 +344,15 @@ def get_cloud_embedding(text: str) -> list:
         except Exception as e:
             print(f"Ошибка HF API: {e}")
 
-    from fastembed import TextEmbedding
-
-    embed_model = TextEmbedding(
-        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-        threads=1,
-    )
-    return list(embed_model.embed([text]))[0].tolist()
+    try:
+        from fastembed import TextEmbedding
+        embed_model = TextEmbedding(
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            threads=1,
+        )
+        return list(embed_model.embed([text]))[0].tolist()
+    except Exception:
+        return [0.0] * 384
 
 
 # =====================================================================
@@ -416,8 +451,14 @@ def init_services():
             vectors_config=VectorParams(size=1, distance=Distance.COSINE),
         )
 
-    for col in [COLLECTION_NAME, CHAT_HISTORY_COLLECTION]:
-        for field in ["section", "project", "source_file", "username"]:
+    if RE_COLLECTION_NAME not in collections:
+        qdrant.create_collection(
+            collection_name=RE_COLLECTION_NAME,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+        )
+
+    for col in [COLLECTION_NAME, CHAT_HISTORY_COLLECTION, RE_COLLECTION_NAME]:
+        for field in ["section", "project", "source_file", "username", "deal_type", "district"]:
             try:
                 qdrant.create_payload_index(
                     collection_name=col,
@@ -760,19 +801,58 @@ def get_db_files_summary():
         return {}
 
 
-def export_chat_history():
-    text = (
-        "# 📝 История диалога (Проект:"
-        f" {st.session_state.get('selected_project', 'Общий')})\n\n"
-    )
-    for msg in st.session_state.get("messages", []):
-        role = (
-            "👤 **Пользователь**"
-            if msg["role"] == "user"
-            else "🤖 **Ассистент**"
+def fetch_real_estate_listings(deal_type="Все", max_price=5000, rooms_filter="Все", owner_only=False, district_query=""):
+    try:
+        must_conditions = []
+
+        if deal_type != "Все":
+            must_conditions.append(FieldCondition(key="deal_type", match=MatchValue(value=deal_type.lower())))
+
+        if owner_only:
+            must_conditions.append(FieldCondition(key="parsed_data.is_broker", match=MatchValue(value=False)))
+
+        scroll_filter = Filter(must=must_conditions) if must_conditions else None
+
+        points, _ = qdrant.scroll(
+            collection_name=RE_COLLECTION_NAME,
+            limit=50,
+            scroll_filter=scroll_filter,
+            with_payload=True,
+            with_vectors=False,
         )
-        text += f"{role}:\n{msg['content']}\n\n---\n\n"
-    return text
+
+        results = []
+        for pt in points:
+            p = pt.payload or {}
+            parsed = p.get("parsed_data", {})
+            price = parsed.get("price_usd") or 0
+            rooms = parsed.get("rooms")
+            district = (parsed.get("district") or "").lower()
+            address = (parsed.get("address") or "").lower()
+
+            # Фильтрация по цене
+            if price > max_price:
+                continue
+
+            # Фильтрация по комнатам
+            if rooms_filter != "Все":
+                if rooms_filter == "4+" and (not rooms or rooms < 4):
+                    continue
+                elif rooms_filter != "4+" and str(rooms) != str(rooms_filter):
+                    continue
+
+            # Поиск по району / адресу
+            if district_query.strip():
+                dq = district_query.strip().lower()
+                if dq not in district and dq not in address:
+                    continue
+
+            results.append(p)
+
+        return sorted(results, key=lambda x: x.get("created_at", ""), reverse=True)
+    except Exception as e:
+        print(f"Ошибка загрузки объектов недвижимости: {e}")
+        return []
 
 
 # =====================================================================
@@ -1039,16 +1119,23 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # 2. Кнопка "Новый чат"
-    if st.button("➕ Новый чат", use_container_width=True, key="btn_new_chat"):
-        st.session_state.view_mode = "chat"
-        st.session_state.active_chat_id = str(uuid.uuid4())
-        st.session_state.active_chat_title = "Новый чат"
-        st.session_state.messages = [{
-            "role": "assistant",
-            "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
-        }]
-        st.rerun()
+    # 2. Кнопки навигации
+    col_nav1, col_nav2 = st.columns([1, 1])
+    with col_nav1:
+        if st.button("➕ Чат", use_container_width=True, key="btn_new_chat"):
+            st.session_state.view_mode = "chat"
+            st.session_state.active_chat_id = str(uuid.uuid4())
+            st.session_state.active_chat_title = "Новый чат"
+            st.session_state.messages = [{
+                "role": "assistant",
+                "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+            }]
+            st.rerun()
+    with col_nav2:
+        btn_re_label = "🏠 Недвижимость" if st.session_state.view_mode != "real_estate" else "📌 🏠 Недвижимость"
+        if st.button(btn_re_label, use_container_width=True, key="btn_real_estate_mode"):
+            st.session_state.view_mode = "real_estate"
+            st.rerun()
 
     # 3. Поиск по чатам
     search_query = st.text_input(
@@ -1197,7 +1284,7 @@ with st.sidebar:
     # --- РАЗДЕЛИТЕЛЬ СВАЙПБАРА ---
     st.markdown("---")
 
-    # --- ПОЛЕ: КНОПКА "НАСТРОЙКИ" (Под <hr />, перед карточкой пользователя) ---
+    # --- ПОЛЕ: КНОПКА "НАСТРОЙКИ" ---
     if user_role in ["admin", "owner"]:
         btn_settings_label = (
             "⚙️ Настройки"
@@ -1255,7 +1342,7 @@ with st.sidebar:
             st.rerun()
 
 # =====================================================================
-# 11. ОСНОВНОЙ ИНТЕРФЕЙС (ЧАТ ИЛИ НАСТРОЙКИ)
+# 11. ОСНОВНОЙ ИНТЕРФЕЙС (ЧАТ / НЕ ДВИЖИМОСТЬ / НАСТРОЙКИ)
 # =====================================================================
 if st.session_state.view_mode == "chat":
     # ---------------------------------------------------------------------
@@ -1501,9 +1588,140 @@ if st.session_state.view_mode == "chat":
         )
         st.rerun()
 
+elif st.session_state.view_mode == "real_estate":
+    # ---------------------------------------------------------------------
+    # РЕЖИМ 2: БАЗА НЕДВИЖИМОСТИ (TELEGRAM PARSER DATABASE)
+    # ---------------------------------------------------------------------
+    st.title("🏠 Мониторинг Недвижимости Telegram")
+    st.caption("База объектов, скомпилированная в реальном времени с проверкой дубликатов.")
+
+    re_tabs = st.tabs(["📊 База объектов и фильтры", "🤖 AI-Подбор под запрос"])
+
+    # --- ВКЛАДКА 1: БАЗА ОБЪЕКТОВ ---
+    with re_tabs[0]:
+        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns([2, 2, 2, 2, 2])
+
+        with col_f1:
+            f_deal_type = st.selectbox("Тип сделки:", ["Все", "Rent", "Sale"], key="re_f_deal")
+        with col_f2:
+            f_rooms = st.selectbox("Комнат:", ["Все", "1", "2", "3", "4+"], key="re_f_rooms")
+        with col_f3:
+            f_max_price = st.slider("Макс. цена ($):", min_value=100, max_value=10000, value=3000, step=100, key="re_f_price")
+        with col_f4:
+            f_district = st.text_input("Район / Улица:", placeholder="Печерский, Франка...", key="re_f_district")
+        with col_f5:
+            st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+            f_owner_only = st.checkbox("🏡 Только от хозяина", value=False, key="re_f_owner")
+
+        listings = fetch_real_estate_listings(
+            deal_type=f_deal_type,
+            max_price=f_max_price,
+            rooms_filter=f_rooms,
+            owner_only=f_owner_only,
+            district_query=f_district,
+        )
+
+        st.markdown(f"Найдено уникальных объектов: **{len(listings)}**")
+        st.divider()
+
+        if not listings:
+            st.info("Объекты не найдены. Измените параметры фильтров или дождитесь новых постов из Telegram.")
+        else:
+            for item in listings:
+                parsed = item.get("parsed_data", {})
+                price = parsed.get("price_usd")
+                price_str = f"${price:,}" if price else "Цена не указана"
+                deal_lbl = "Аренда" if parsed.get("deal_type") == "rent" else "Продажа"
+                rooms_lbl = f"{parsed.get('rooms')} к." if parsed.get("rooms") else "Комнаты не указаны"
+                area_lbl = f"{parsed.get('area_sqm')} м²" if parsed.get("area_sqm") else ""
+                district_lbl = parsed.get("district") or "Район не указан"
+                address_lbl = parsed.get("address") or ""
+                phone_lbl = parsed.get("phone") or "Телефон не указан"
+                is_broker = parsed.get("is_broker")
+
+                broker_tag = (
+                    '<span class="re-badge-owner">🏡 От хозяина</span>'
+                    if is_broker is False
+                    else '<span class="re-badge">👔 Риелтор / Агентство</span>'
+                )
+
+                st.markdown(
+                    f"""
+                    <div class="re-card">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span class="re-price">{price_str}</span>
+                            <div>
+                                <span class="re-badge">{deal_lbl}</span>
+                                <span class="re-badge">{rooms_lbl}</span>
+                                {f'<span class="re-badge">{area_lbl}</span>' if area_lbl else ''}
+                                {broker_tag}
+                            </div>
+                        </div>
+                        <div style="margin-top: 8px; font-weight: 600; color: #3c4043;">
+                            📍 {district_lbl} {f'— {address_lbl}' if address_lbl else ''}
+                        </div>
+                        <div style="margin-top: 4px; font-size: 13px; color: #5f6368;">
+                            📞 {phone_lbl} | 💬 Канал: <b>{item.get('channel', 'Telegram')}</b> | 🕒 {item.get('created_at', '')}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                with st.expander("📄 Исходный текст поста"):
+                    st.text(item.get("raw_text", ""))
+
+    # --- ВКЛАДКА 2: AI ПОДБОР ---
+    with re_tabs[1]:
+        st.subheader("🤖 Интеллектуальный поиск квартир по всей базе")
+        ai_re_prompt = st.text_input(
+            "Опишите желаемый объект человеческим языком:",
+            placeholder="Например: Найди тихую 2-комнатную на Печерске или Шевченковском до $1200 с хорошим ремонтом",
+            key="input_ai_re_prompt",
+        )
+
+        if ai_re_prompt and st.button("🔍 Найти подходящие варианты", use_container_width=True):
+            with st.spinner("Векторный поиск по базе недвижимости + анализ Groq..."):
+                query_vec = get_cloud_embedding(ai_re_prompt)
+                try:
+                    search_res = qdrant.query_points(
+                        collection_name=RE_COLLECTION_NAME, query=query_vec, limit=8
+                    ).points
+
+                    if not search_res:
+                        st.warning("К сожалению, подходящих вариантов в базе пока нет.")
+                    else:
+                        context_blocks = []
+                        for hit in search_res:
+                            p = hit.payload or {}
+                            parsed = p.get("parsed_data", {})
+                            context_blocks.append(
+                                f"Объект: {parsed.get('deal_type')}, Комнат: {parsed.get('rooms')}, "
+                                f"Цена: ${parsed.get('price_usd')}, Район: {parsed.get('district')}, "
+                                f"Адрес: {parsed.get('address')}, Описание: {p.get('raw_text', '')}"
+                            )
+
+                        llm_re_prompt = f"""Ты — профессиональный риелтор-консультант.
+Пользователь ищет недвижимость по запросу: "{ai_re_prompt}".
+
+Вот варианты из нашей актуальной базы данных Telegram:
+{"---".join(context_blocks)}
+
+Сформируй для пользователя красиво оформленную подборку объектов. 
+Укажи цены, районы, ключевые плюсы каждого варианта и прямые рекомендации."""
+
+                        res = groq_client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            messages=[{"role": "user", "content": llm_re_prompt}],
+                            temperature=0.2,
+                        )
+                        st.markdown(res.choices[0].message.content)
+                except Exception as e:
+                    st.error(f"Ошибка поиска: {e}")
+
 else:
     # ---------------------------------------------------------------------
-    # РЕЖИМ 2: НАСТРОЙКИ (ПОЛЕ 2 СО ВСЕМИ ВКЛАДКАМИ)
+    # РЕЖИМ 3: НАСТРОЙКИ (ПОЛЕ 2 СО ВСЕМИ ВКЛАДКАМИ)
     # ---------------------------------------------------------------------
     col_head1, col_head2 = st.columns([4, 1])
     with col_head1:
