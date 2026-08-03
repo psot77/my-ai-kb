@@ -199,212 +199,213 @@ st.markdown(
 
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
+  return hashlib.sha256(password.encode()).hexdigest()
 
 
 # =====================================================================
 # 2. ФУНКЦИИ ГЕНЕРАЦИИ PDF-ОТЧЕТОВ
 # =====================================================================
 def generate_pdf_report(project_name: str, messages: list) -> bytes:
-    font_path = "DejaVuSans.ttf"
-    if not os.path.exists(font_path):
-        try:
-            urllib.request.urlretrieve(
-                "https://cdn.jsdelivr.net/font-dejavu/2.37/ttf/DejaVuSans.ttf",
-                font_path,
-            )
-        except Exception:
-            pass
+  font_path = "DejaVuSans.ttf"
+  if not os.path.exists(font_path):
+    try:
+      urllib.request.urlretrieve(
+          "https://cdn.jsdelivr.net/font-dejavu/2.37/ttf/DejaVuSans.ttf",
+          font_path,
+      )
+    except Exception:
+      pass
 
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=letter,
-        rightMargin=30,
-        leftMargin=30,
-        topMargin=30,
-        bottomMargin=30,
-    )
+  buffer = io.BytesIO()
+  doc = SimpleDocTemplate(
+      buffer,
+      pagesize=letter,
+      rightMargin=30,
+      leftMargin=30,
+      topMargin=30,
+      bottomMargin=30,
+  )
 
-    if os.path.exists(font_path):
-        pdfmetrics.registerFont(TTFont("DejaVu", font_path))
-        font_name = "DejaVu"
-    else:
-        font_name = "Helvetica"
+  if os.path.exists(font_path):
+    pdfmetrics.registerFont(TTFont("DejaVu", font_path))
+    font_name = "DejaVu"
+  else:
+    font_name = "Helvetica"
 
-    style_title = ParagraphStyle(
-        "DocTitle", fontName=font_name, fontSize=16, leading=20, spaceAfter=12
-    )
-    style_meta = ParagraphStyle(
-        "DocMeta",
-        fontName=font_name,
-        fontSize=9,
-        leading=12,
-        textColor="#555555",
-        spaceAfter=18,
-    )
-    style_msg = ParagraphStyle(
-        "DocMsg", fontName=font_name, fontSize=10, leading=14, spaceAfter=10
-    )
+  style_title = ParagraphStyle(
+      "DocTitle", fontName=font_name, fontSize=16, leading=20, spaceAfter=12
+  )
+  style_meta = ParagraphStyle(
+      "DocMeta",
+      fontName=font_name,
+      fontSize=9,
+      leading=12,
+      textColor="#555555",
+      spaceAfter=18,
+  )
+  style_msg = ParagraphStyle(
+      "DocMsg", fontName=font_name, fontSize=10, leading=14, spaceAfter=10
+  )
 
-    story = []
-    story.append(
-        Paragraph(f"<b>Отчет по диалогу: {project_name}</b>", style_title)
-    )
-    story.append(
-        Paragraph(
-            f"Дата генерации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |"
-            " Сгенерировано системой Enterprise AI",
-            style_meta,
-        )
-    )
+  story = []
+  story.append(
+      Paragraph(f"<b>Отчет по диалогу: {project_name}</b>", style_title)
+  )
+  story.append(
+      Paragraph(
+          f"Дата генерации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |"
+          " Сгенерировано системой Enterprise AI",
+          style_meta,
+      )
+  )
 
-    for msg in messages:
-        role_label = (
-            "👤 <b>Пользователь</b>"
-            if msg["role"] == "user"
-            else "🤖 <b>AI Ассистент</b>"
-        )
-        clean_content = (
-            msg["content"]
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace("\n", "<br/>")
-        )
-        story.append(Paragraph(f"{role_label}:<br/>{clean_content}", style_msg))
+  for msg in messages:
+    role_label = (
+        "👤 <b>Пользователь</b>"
+        if msg["role"] == "user"
+        else "🤖 <b>AI Ассистент</b>"
+    )
+    clean_content = (
+        msg["content"]
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\n", "<br/>")
+    )
+    story.append(Paragraph(f"{role_label}:<br/>{clean_content}", style_msg))
 
-    doc.build(story)
-    buffer.seek(0)
-    return buffer.getvalue()
+  doc.build(story)
+  buffer.seek(0)
+  return buffer.getvalue()
 
 
 # =====================================================================
 # 3. ФУНКЦИИ ИЗВЛЕЧЕНИЯ ТЕКСТА И ВЕКТОРИЗАЦИИ
 # =====================================================================
 def extract_text_from_file(uploaded_file) -> str:
-    fname = uploaded_file.name.lower()
-    try:
-        if fname.endswith(".pdf"):
-            pdf_reader = PdfReader(uploaded_file)
-            text_pages = [page.extract_text() or "" for page in pdf_reader.pages]
-            return "\n\n".join(text_pages)
-        elif fname.endswith(".docx"):
-            doc = Document(uploaded_file)
-            paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-            for table in doc.tables:
-                for row in table.rows:
-                    row_text = [
-                        cell.text.strip() for cell in row.cells if cell.text.strip()
-                    ]
-                    if row_text:
-                        paragraphs.append(" | ".join(row_text))
-            return "\n\n".join(paragraphs)
-        else:
-            return uploaded_file.read().decode("utf-8", errors="ignore")
-    except Exception as e:
-        st.error(f"Ошибка при чтении файла {uploaded_file.name}: {e}")
-        return ""
+  fname = uploaded_file.name.lower()
+  try:
+    if fname.endswith(".pdf"):
+      pdf_reader = PdfReader(uploaded_file)
+      text_pages = [page.extract_text() or "" for page in pdf_reader.pages]
+      return "\n\n".join(text_pages)
+    elif fname.endswith(".docx"):
+      doc = Document(uploaded_file)
+      paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+      for table in doc.tables:
+        for row in table.rows:
+          row_text = [
+              cell.text.strip() for cell in row.cells if cell.text.strip()
+          ]
+          if row_text:
+            paragraphs.append(" | ".join(row_text))
+      return "\n\n".join(paragraphs)
+    else:
+      return uploaded_file.read().decode("utf-8", errors="ignore")
+  except Exception as e:
+    st.error(f"Ошибка при чтении файла {uploaded_file.name}: {e}")
+    return ""
 
 
 def split_text_into_chunks(text: str, chunk_size: int = 600) -> list:
-    paragraphs = text.split("\n\n")
-    chunks = []
-    current_chunk = ""
+  paragraphs = text.split("\n\n")
+  chunks = []
+  current_chunk = ""
 
-    for p in paragraphs:
-        p_clean = p.strip()
-        if not p_clean:
-            continue
-        if len(current_chunk) + len(p_clean) < chunk_size:
-            current_chunk += p_clean + "\n\n"
-        else:
-            if current_chunk.strip():
-                chunks.append(current_chunk.strip())
-            current_chunk = p_clean + "\n\n"
-
-    if current_chunk.strip():
+  for p in paragraphs:
+    p_clean = p.strip()
+    if not p_clean:
+      continue
+    if len(current_chunk) + len(p_clean) < chunk_size:
+      current_chunk += p_clean + "\n\n"
+    else:
+      if current_chunk.strip():
         chunks.append(current_chunk.strip())
+      current_chunk = p_clean + "\n\n"
 
-    return chunks if chunks else [text]
+  if current_chunk.strip():
+    chunks.append(current_chunk.strip())
+
+  return chunks if chunks else [text]
 
 
 def get_cloud_embedding(text: str) -> list:
-    if HF_TOKEN:
-        try:
-            client = InferenceClient(token=HF_TOKEN)
-            result = client.feature_extraction(
-                text,
-                model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            )
-            data = result.tolist() if hasattr(result, "tolist") else result
-            while (
-                isinstance(data, list) and len(data) > 0 and isinstance(data[0], list)
-            ):
-                data = data[0]
-            return [float(x) for x in data]
-        except Exception as e:
-            print(f"Ошибка HF API: {e}")
-
+  if HF_TOKEN:
     try:
-        from fastembed import TextEmbedding
-        embed_model = TextEmbedding(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
-            threads=1,
-        )
-        return list(embed_model.embed([text]))[0].tolist()
-    except Exception:
-        return [0.0] * 384
+      client = InferenceClient(token=HF_TOKEN)
+      result = client.feature_extraction(
+          text,
+          model="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      )
+      data = result.tolist() if hasattr(result, "tolist") else result
+      while (
+          isinstance(data, list) and len(data) > 0 and isinstance(data[0], list)
+      ):
+        data = data[0]
+      return [float(x) for x in data]
+    except Exception as e:
+      print(f"Ошибка HF API: {e}")
+
+  try:
+    from fastembed import TextEmbedding
+
+    embed_model = TextEmbedding(
+        model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+        threads=1,
+    )
+    return list(embed_model.embed([text]))[0].tolist()
+  except Exception:
+    return [0.0] * 384
 
 
 # =====================================================================
 # 4. GeoIP ФУНКЦИИ
 # =====================================================================
 def get_client_ip() -> str:
-    try:
-        if hasattr(st, "context") and hasattr(st.context, "headers"):
-            headers = st.context.headers
-            if "X-Forwarded-For" in headers:
-                return headers["X-Forwarded-For"].split(",")[0].strip()
-            if "X-Real-Ip" in headers:
-                return headers["X-Real-Ip"]
-    except Exception:
-        pass
-    return "127.0.0.1"
+  try:
+    if hasattr(st, "context") and hasattr(st.context, "headers"):
+      headers = st.context.headers
+      if "X-Forwarded-For" in headers:
+        return headers["X-Forwarded-For"].split(",")[0].strip()
+      if "X-Real-Ip" in headers:
+        return headers["X-Real-Ip"]
+  except Exception:
+    pass
+  return "127.0.0.1"
 
 
 def get_geoip_details(ip: str) -> dict:
-    default_res = {
-        "country": "Неизвестно",
-        "city": "Неизвестно",
-        "lat": None,
-        "lon": None,
+  default_res = {
+      "country": "Неизвестно",
+      "city": "Неизвестно",
+      "lat": None,
+      "lon": None,
+  }
+  if (
+      ip in ["127.0.0.1", "localhost"]
+      or ip.startswith("192.168.")
+      or ip.startswith("10.")
+  ):
+    return {
+        "country": "Локальная сеть",
+        "city": "Dev",
+        "lat": 50.4501,
+        "lon": 30.5234,
     }
-    if (
-        ip in ["127.0.0.1", "localhost"]
-        or ip.startswith("192.168.")
-        or ip.startswith("10.")
-    ):
+  try:
+    url = f"http://ip-api.com/json/{ip}?fields=country,city,lat,lon,status"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=1.5) as response:
+      data = json.loads(response.read().decode())
+      if data.get("status") == "success":
         return {
-            "country": "Локальная сеть",
-            "city": "Dev",
-            "lat": 50.4501,
-            "lon": 30.5234,
+            "country": data.get("country", "Неизвестно"),
+            "city": data.get("city", "Неизвестно"),
+            "lat": data.get("lat"),
+            "lon": data.get("lon"),
         }
-    try:
-        url = f"http://ip-api.com/json/{ip}?fields=country,city,lat,lon,status"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=1.5) as response:
-            data = json.loads(response.read().decode())
-            if data.get("status") == "success":
-                return {
-                    "country": data.get("country", "Неизвестно"),
-                    "city": data.get("city", "Неизвестно"),
-                    "lat": data.get("lat"),
-                    "lon": data.get("lon"),
-                }
-    except Exception:
-        pass
-    return default_res
+  except Exception:
+    pass
+  return default_res
 
 
 # =====================================================================
@@ -412,65 +413,72 @@ def get_geoip_details(ip: str) -> dict:
 # =====================================================================
 @st.cache_resource(max_entries=1)
 def init_services():
-    qdrant = QdrantClient(
-        url=QDRANT_URL,
-        api_key=QDRANT_API_KEY,
-        port=443,
-        https=True,
-        check_compatibility=False,
+  qdrant = QdrantClient(
+      url=QDRANT_URL,
+      api_key=QDRANT_API_KEY,
+      port=443,
+      https=True,
+      check_compatibility=False,
+  )
+
+  collections = [c.name for c in qdrant.get_collections().collections]
+
+  if COLLECTION_NAME not in collections:
+    qdrant.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
     )
 
-    collections = [c.name for c in qdrant.get_collections().collections]
+  if LOGS_COLLECTION not in collections:
+    qdrant.create_collection(
+        collection_name=LOGS_COLLECTION,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
 
-    if COLLECTION_NAME not in collections:
-        qdrant.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+  if ANALYTICS_COLLECTION not in collections:
+    qdrant.create_collection(
+        collection_name=ANALYTICS_COLLECTION,
+        vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+    )
+
+  if CONFIG_COLLECTION not in collections:
+    qdrant.create_collection(
+        collection_name=CONFIG_COLLECTION,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
+
+  if CHAT_HISTORY_COLLECTION not in collections:
+    qdrant.create_collection(
+        collection_name=CHAT_HISTORY_COLLECTION,
+        vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+    )
+
+  if RE_COLLECTION_NAME not in collections:
+    qdrant.create_collection(
+        collection_name=RE_COLLECTION_NAME,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+    )
+
+  for col in [COLLECTION_NAME, CHAT_HISTORY_COLLECTION, RE_COLLECTION_NAME]:
+    for field in [
+        "section",
+        "project",
+        "source_file",
+        "username",
+        "deal_type",
+        "district",
+    ]:
+      try:
+        qdrant.create_payload_index(
+            collection_name=col,
+            field_name=field,
+            field_schema=PayloadSchemaType.KEYWORD,
         )
+      except Exception:
+        pass
 
-    if LOGS_COLLECTION not in collections:
-        qdrant.create_collection(
-            collection_name=LOGS_COLLECTION,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
-
-    if ANALYTICS_COLLECTION not in collections:
-        qdrant.create_collection(
-            collection_name=ANALYTICS_COLLECTION,
-            vectors_config=VectorParams(size=1, distance=Distance.COSINE),
-        )
-
-    if CONFIG_COLLECTION not in collections:
-        qdrant.create_collection(
-            collection_name=CONFIG_COLLECTION,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
-
-    if CHAT_HISTORY_COLLECTION not in collections:
-        qdrant.create_collection(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            vectors_config=VectorParams(size=1, distance=Distance.COSINE),
-        )
-
-    if RE_COLLECTION_NAME not in collections:
-        qdrant.create_collection(
-            collection_name=RE_COLLECTION_NAME,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
-
-    for col in [COLLECTION_NAME, CHAT_HISTORY_COLLECTION, RE_COLLECTION_NAME]:
-        for field in ["section", "project", "source_file", "username", "deal_type", "district"]:
-            try:
-                qdrant.create_payload_index(
-                    collection_name=col,
-                    field_name=field,
-                    field_schema=PayloadSchemaType.KEYWORD,
-                )
-            except Exception:
-                pass
-
-    groq_client = Groq(api_key=GROQ_API_KEY)
-    return qdrant, groq_client
+  groq_client = Groq(api_key=GROQ_API_KEY)
+  return qdrant, groq_client
 
 
 qdrant, groq_client = init_services()
@@ -480,206 +488,206 @@ qdrant, groq_client = init_services()
 # 6. ФУНКЦИИ УПРАВЛЕНИЯ "НЕДАВНИМИ" ЧАТАМИ И КОНФИГУРАЦИЕЙ
 # =====================================================================
 def load_system_config():
-    try:
-        scroll_res, _ = qdrant.scroll(
-            collection_name=CONFIG_COLLECTION, limit=5, with_payload=True
-        )
-        for pt in scroll_res:
-            if pt.payload and "projects" in pt.payload:
-                return pt.payload.get("projects"), pt.payload.get("sections")
-    except Exception:
-        pass
-    return None, None
+  try:
+    scroll_res, _ = qdrant.scroll(
+        collection_name=CONFIG_COLLECTION, limit=5, with_payload=True
+    )
+    for pt in scroll_res:
+      if pt.payload and "projects" in pt.payload:
+        return pt.payload.get("projects"), pt.payload.get("sections")
+  except Exception:
+    pass
+  return None, None
 
 
 def save_system_config(projects, sections):
-    try:
-        point = PointStruct(
-            id="00000000-0000-0000-0000-000000000001",
-            vector=[0.0] * 384,
-            payload={"projects": projects, "sections": list(set(sections))},
-        )
-        qdrant.upsert(collection_name=CONFIG_COLLECTION, points=[point])
-    except Exception as e:
-        print(f"Ошибка сохранения конфига: {e}")
+  try:
+    point = PointStruct(
+        id="00000000-0000-0000-0000-000000000001",
+        vector=[0.0] * 384,
+        payload={"projects": projects, "sections": list(set(sections))},
+    )
+    qdrant.upsert(collection_name=CONFIG_COLLECTION, points=[point])
+  except Exception as e:
+    print(f"Ошибка сохранения конфига: {e}")
 
 
 def get_recent_chat_threads(username: str, limit: int = 50) -> list:
+  try:
+    scroll_res = []
     try:
-        scroll_res = []
-        try:
-            scroll_res, _ = qdrant.scroll(
-                collection_name=CHAT_HISTORY_COLLECTION,
-                scroll_filter=Filter(
-                    must=[
-                        FieldCondition(
-                            key="username", match=MatchValue(value=username)
-                        )
-                    ]
-                ),
-                limit=limit,
-                with_payload=True,
-                with_vectors=False,
-            )
-        except Exception:
-            scroll_res, _ = qdrant.scroll(
-                collection_name=CHAT_HISTORY_COLLECTION,
-                limit=limit,
-                with_payload=True,
-                with_vectors=False,
-            )
+      scroll_res, _ = qdrant.scroll(
+          collection_name=CHAT_HISTORY_COLLECTION,
+          scroll_filter=Filter(
+              must=[
+                  FieldCondition(
+                      key="username", match=MatchValue(value=username)
+                  )
+              ]
+          ),
+          limit=limit,
+          with_payload=True,
+          with_vectors=False,
+      )
+    except Exception:
+      scroll_res, _ = qdrant.scroll(
+          collection_name=CHAT_HISTORY_COLLECTION,
+          limit=limit,
+          with_payload=True,
+          with_vectors=False,
+      )
 
-        threads = []
-        for pt in scroll_res:
-            p = pt.payload or {}
-            if p.get("username") == username:
-                threads.append({
-                    "chat_id": str(pt.id),
-                    "title": p.get("title", "Новый чат"),
-                    "project": p.get("project", "Общий проект"),
-                    "updated_at": p.get("updated_at", ""),
-                    "messages": p.get("messages", []),
-                    "is_pinned": p.get("is_pinned", False),
-                })
+    threads = []
+    for pt in scroll_res:
+      p = pt.payload or {}
+      if p.get("username") == username:
+        threads.append({
+            "chat_id": str(pt.id),
+            "title": p.get("title", "Новый чат"),
+            "project": p.get("project", "Общий проект"),
+            "updated_at": p.get("updated_at", ""),
+            "messages": p.get("messages", []),
+            "is_pinned": p.get("is_pinned", False),
+        })
 
-        pinned_threads = sorted(
-            [t for t in threads if t.get("is_pinned")],
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True,
-        )
-        unpinned_threads = sorted(
-            [t for t in threads if not t.get("is_pinned")],
-            key=lambda x: x.get("updated_at", ""),
-            reverse=True,
-        )
-        return pinned_threads + unpinned_threads
-    except Exception as e:
-        print(f"Ошибка загрузки списка чатов: {e}")
-        return []
+    pinned_threads = sorted(
+        [t for t in threads if t.get("is_pinned")],
+        key=lambda x: x.get("updated_at", ""),
+        reverse=True,
+    )
+    unpinned_threads = sorted(
+        [t for t in threads if not t.get("is_pinned")],
+        key=lambda x: x.get("updated_at", ""),
+        reverse=True,
+    )
+    return pinned_threads + unpinned_threads
+  except Exception as e:
+    print(f"Ошибка загрузки списка чатов: {e}")
+    return []
 
 
 def load_chat_thread_by_id(chat_id: str) -> tuple:
-    try:
-        valid_uuid = (
-            str(uuid.UUID(chat_id))
-            if len(chat_id) == 36
-            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
-        )
-        res = qdrant.retrieve(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            ids=[valid_uuid],
-            with_payload=True,
-        )
-        if res and res[0].payload:
-            p = res[0].payload
-            return (
-                p.get("messages", []),
-                p.get("project", "Общий проект"),
-                p.get("title", "Диалог"),
-            )
-    except Exception as e:
-        print(f"Ошибка загрузки диалога: {e}")
-    return [], "Общий проект", "Новый чат"
+  try:
+    valid_uuid = (
+        str(uuid.UUID(chat_id))
+        if len(chat_id) == 36
+        else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+    )
+    res = qdrant.retrieve(
+        collection_name=CHAT_HISTORY_COLLECTION,
+        ids=[valid_uuid],
+        with_payload=True,
+    )
+    if res and res[0].payload:
+      p = res[0].payload
+      return (
+          p.get("messages", []),
+          p.get("project", "Общий проект"),
+          p.get("title", "Диалог"),
+      )
+  except Exception as e:
+    print(f"Ошибка загрузки диалога: {e}")
+  return [], "Общий проект", "Новый чат"
 
 
 def save_chat_thread(
     chat_id: str, username: str, project: str, title: str, messages: list
 ):
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+  now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    existing_is_pinned = False
+  existing_is_pinned = False
+  try:
+    valid_uuid = (
+        str(uuid.UUID(chat_id))
+        if len(chat_id) == 36
+        else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+    )
+    res = qdrant.retrieve(
+        collection_name=CHAT_HISTORY_COLLECTION,
+        ids=[valid_uuid],
+        with_payload=True,
+    )
+    if res and res[0].payload:
+      existing_is_pinned = res[0].payload.get("is_pinned", False)
+  except Exception:
+    pass
+
+  payload = {
+      "chat_id": chat_id,
+      "username": username,
+      "project": project,
+      "title": title,
+      "messages": messages,
+      "updated_at": now_str,
+      "is_pinned": existing_is_pinned,
+  }
+
+  try:
+    valid_uuid = str(uuid.UUID(chat_id))
+  except Exception:
+    valid_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+
+  try:
+    point = PointStruct(id=valid_uuid, vector=[0.0], payload=payload)
+    qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
+  except Exception:
     try:
-        valid_uuid = (
-            str(uuid.UUID(chat_id))
-            if len(chat_id) == 36
-            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
-        )
-        res = qdrant.retrieve(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            ids=[valid_uuid],
-            with_payload=True,
-        )
-        if res and res[0].payload:
-            existing_is_pinned = res[0].payload.get("is_pinned", False)
-    except Exception:
-        pass
-
-    payload = {
-        "chat_id": chat_id,
-        "username": username,
-        "project": project,
-        "title": title,
-        "messages": messages,
-        "updated_at": now_str,
-        "is_pinned": existing_is_pinned,
-    }
-
-    try:
-        valid_uuid = str(uuid.UUID(chat_id))
-    except Exception:
-        valid_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
-
-    try:
-        point = PointStruct(id=valid_uuid, vector=[0.0], payload=payload)
-        qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
-    except Exception:
-        try:
-            point = PointStruct(id=valid_uuid, vector=[0.0] * 384, payload=payload)
-            qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
-        except Exception as e:
-            print(f"Ошибка сохранения чата в Qdrant: {e}")
+      point = PointStruct(id=valid_uuid, vector=[0.0] * 384, payload=payload)
+      qdrant.upsert(collection_name=CHAT_HISTORY_COLLECTION, points=[point])
+    except Exception as e:
+      print(f"Ошибка сохранения чата в Qdrant: {e}")
 
 
 def toggle_pin_chat_thread(chat_id: str, is_pinned: bool):
-    try:
-        valid_uuid = (
-            str(uuid.UUID(chat_id))
-            if len(chat_id) == 36
-            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
-        )
-        qdrant.set_payload(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            payload={"is_pinned": is_pinned},
-            points=[valid_uuid],
-        )
-        log_event("PIN_CHAT", f"Чат '{chat_id}' статус закрепления: {is_pinned}")
-    except Exception as e:
-        print(f"Ошибка закрепления чата: {e}")
+  try:
+    valid_uuid = (
+        str(uuid.UUID(chat_id))
+        if len(chat_id) == 36
+        else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+    )
+    qdrant.set_payload(
+        collection_name=CHAT_HISTORY_COLLECTION,
+        payload={"is_pinned": is_pinned},
+        points=[valid_uuid],
+    )
+    log_event("PIN_CHAT", f"Чат '{chat_id}' статус закрепления: {is_pinned}")
+  except Exception as e:
+    print(f"Ошибка закрепления чата: {e}")
 
 
 def rename_chat_thread(chat_id: str, new_title: str):
-    try:
-        valid_uuid = (
-            str(uuid.UUID(chat_id))
-            if len(chat_id) == 36
-            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
-        )
-        qdrant.set_payload(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            payload={"title": new_title},
-            points=[valid_uuid],
-        )
-        if st.session_state.active_chat_id == chat_id:
-            st.session_state.active_chat_title = new_title
-        log_event("RENAME_CHAT", f"Чат '{chat_id}' переименован в '{new_title}'")
-    except Exception as e:
-        print(f"Ошибка переименования чата: {e}")
+  try:
+    valid_uuid = (
+        str(uuid.UUID(chat_id))
+        if len(chat_id) == 36
+        else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+    )
+    qdrant.set_payload(
+        collection_name=CHAT_HISTORY_COLLECTION,
+        payload={"title": new_title},
+        points=[valid_uuid],
+    )
+    if st.session_state.active_chat_id == chat_id:
+      st.session_state.active_chat_title = new_title
+    log_event("RENAME_CHAT", f"Чат '{chat_id}' переименован в '{new_title}'")
+  except Exception as e:
+    print(f"Ошибка переименования чата: {e}")
 
 
 def delete_chat_thread(chat_id: str):
-    try:
-        valid_uuid = (
-            str(uuid.UUID(chat_id))
-            if len(chat_id) == 36
-            else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
-        )
-        qdrant.delete(
-            collection_name=CHAT_HISTORY_COLLECTION,
-            points_selector=[valid_uuid],
-        )
-        log_event("DELETE_CHAT", f"Удален чат ID '{chat_id}'")
-    except Exception as e:
-        print(f"Ошибка удаления чата: {e}")
+  try:
+    valid_uuid = (
+        str(uuid.UUID(chat_id))
+        if len(chat_id) == 36
+        else str(uuid.uuid5(uuid.NAMESPACE_DNS, chat_id))
+    )
+    qdrant.delete(
+        collection_name=CHAT_HISTORY_COLLECTION,
+        points_selector=[valid_uuid],
+    )
+    log_event("DELETE_CHAT", f"Удален чат ID '{chat_id}'")
+  except Exception as e:
+    print(f"Ошибка удаления чата: {e}")
 
 
 def log_event(
@@ -689,36 +697,34 @@ def log_event(
     username: str = None,
     role: str = None,
 ):
-    try:
-        user_info = st.session_state.get("current_user") or {}
+  try:
+    user_info = st.session_state.get("current_user") or {}
 
-        req_username = (
-            username if username else user_info.get("username", "Гость")
-        )
-        req_role = role if role else user_info.get("role", "guest")
-        req_ip = ip if ip else user_info.get("ip", get_client_ip())
+    req_username = username if username else user_info.get("username", "Гость")
+    req_role = role if role else user_info.get("role", "guest")
+    req_ip = ip if ip else user_info.get("ip", get_client_ip())
 
-        geo = get_geoip_details(req_ip)
+    geo = get_geoip_details(req_ip)
 
-        log_point = PointStruct(
-            id=uuid.uuid4().hex,
-            vector=[0.0] * 384,
-            payload={
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "username": req_username,
-                "role": req_role,
-                "action": action,
-                "details": details,
-                "ip": req_ip,
-                "country": geo.get("country", "Неизвестно"),
-                "city": geo.get("city", "Неизвестно"),
-                "lat": geo.get("lat"),
-                "lon": geo.get("lon"),
-            },
-        )
-        qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
-    except Exception as e:
-        print(f"Ошибка логирования: {e}")
+    log_point = PointStruct(
+        id=uuid.uuid4().hex,
+        vector=[0.0] * 384,
+        payload={
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "username": req_username,
+            "role": req_role,
+            "action": action,
+            "details": details,
+            "ip": req_ip,
+            "country": geo.get("country", "Неизвестно"),
+            "city": geo.get("city", "Неизвестно"),
+            "lat": geo.get("lat"),
+            "lon": geo.get("lon"),
+        },
+    )
+    qdrant.upsert(collection_name=LOGS_COLLECTION, points=[log_point])
+  except Exception as e:
+    print(f"Ошибка логирования: {e}")
 
 
 def log_analytics(
@@ -731,78 +737,79 @@ def log_analytics(
     status: str = "Успешно",
     details: str = "",
 ):
-    try:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        point = PointStruct(
-            id=uuid.uuid4().hex,
-            vector=[0.0],
-            payload={
-                "timestamp": now_str,
-                "source": source,
-                "user_id": str(user_id),
-                "username": username or "Аноним",
-                "event_type": event_type,
-                "query": query[:300],
-                "score": float(score),
-                "found_in_kb": bool(score >= 0.20),
-                "status": status,
-                "details": details,
-            },
-        )
-        qdrant.upsert(collection_name=ANALYTICS_COLLECTION, points=[point])
-    except Exception as e:
-        print(f"Ошибка логирования аналитики: {e}")
+  try:
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    point = PointStruct(
+        id=uuid.uuid4().hex,
+        vector=[0.0],
+        payload={
+            "timestamp": now_str,
+            "source": source,
+            "user_id": str(user_id),
+            "username": username or "Аноним",
+            "event_type": event_type,
+            "query": query[:300],
+            "score": float(score),
+            "found_in_kb": bool(score >= 0.20),
+            "status": status,
+            "details": details,
+        },
+    )
+    qdrant.upsert(collection_name=ANALYTICS_COLLECTION, points=[point])
+  except Exception as e:
+    print(f"Ошибка логирования аналитики: {e}")
 
 
 def get_audit_logs():
-    try:
-        scroll_res, _ = qdrant.scroll(
-            collection_name=LOGS_COLLECTION,
-            limit=1000,
-            with_payload=True,
-            with_vectors=False,
-        )
-        logs = []
-        for pt in scroll_res:
-            p = pt.payload or {}
-            logs.append({
-                "timestamp": p.get("timestamp", ""),
-                "username": p.get("username", "Неизвестно"),
-                "role": p.get("role", "guest"),
-                "ip": p.get("ip", "127.0.0.1"),
-                "country": p.get("country", "Неизвестно"),
-                "city": p.get("city", "Неизвестно"),
-                "lat": p.get("lat"),
-                "lon": p.get("lon"),
-                "action": p.get("action", "UNKNOWN"),
-                "details": p.get("details", ""),
-            })
-        return sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
-    except Exception:
-        return []
+  try:
+    scroll_res, _ = qdrant.scroll(
+        collection_name=LOGS_COLLECTION,
+        limit=1000,
+        with_payload=True,
+        with_vectors=False,
+    )
+    logs = []
+    for pt in scroll_res:
+      p = pt.payload or {}
+      logs.append({
+          "timestamp": p.get("timestamp", ""),
+          "username": p.get("username", "Неизвестно"),
+          "role": p.get("role", "guest"),
+          "ip": p.get("ip", "127.0.0.1"),
+          "country": p.get("country", "Неизвестно"),
+          "city": p.get("city", "Неизвестно"),
+          "lat": p.get("lat"),
+          "lon": p.get("lon"),
+          "action": p.get("action", "UNKNOWN"),
+          "details": p.get("details", ""),
+      })
+    return sorted(logs, key=lambda x: x.get("timestamp", ""), reverse=True)
+  except Exception:
+    return []
 
 
 def get_db_files_summary():
-    try:
-        scroll_res, _ = qdrant.scroll(
-            collection_name=COLLECTION_NAME,
-            limit=10000,
-            with_payload=["source_file", "section"],
-            with_vectors=False,
-        )
-        files_by_section = {}
-        for point in scroll_res:
-            sec = point.payload.get("section", "Общий раздел")
-            src = point.payload.get("source_file", "Неизвестный файл")
-            if sec not in files_by_section:
-                files_by_section[sec] = {}
-            files_by_section[sec][src] = files_by_section[sec].get(src, 0) + 1
-        return files_by_section
-    except Exception:
-        return {}
+  try:
+    scroll_res, _ = qdrant.scroll(
+        collection_name=COLLECTION_NAME,
+        limit=10000,
+        with_payload=["source_file", "section"],
+        with_vectors=False,
+    )
+    files_by_section = {}
+    for point in scroll_res:
+      sec = point.payload.get("section", "Общий раздел")
+      src = point.payload.get("source_file", "Неизвестный файл")
+      if sec not in files_by_section:
+        files_by_section[sec] = {}
+      files_by_section[sec][src] = files_by_section[sec].get(src, 0) + 1
+    return files_by_section
+  except Exception:
+    return {}
 
 
 def fetch_real_estate_listings(
+    post_type="offer",
     deal_type="Все",
     property_type="Все",
     min_price=0,
@@ -813,340 +820,340 @@ def fetch_real_estate_listings(
     owner_only=False,
     district_query="",
 ):
-    try:
-        must_conditions = []
+  try:
+    must_conditions = []
 
-        if deal_type != "Все":
-            deal_val = "rent" if ("Снять" in deal_type or "Аренд" in deal_type) else "sale"
-            must_conditions.append(FieldCondition(key="deal_type", match=MatchValue(value=deal_val)))
+    if deal_type != "Все":
+      deal_val = (
+          "rent" if ("Снять" in deal_type or "Аренд" in deal_type) else "sale"
+      )
+      must_conditions.append(
+          FieldCondition(key="deal_type", match=MatchValue(value=deal_val))
+      )
 
-        scroll_filter = Filter(must=must_conditions) if must_conditions else None
+    scroll_filter = Filter(must=must_conditions) if must_conditions else None
 
-        points, _ = qdrant.scroll(
-            collection_name=RE_COLLECTION_NAME,
-            limit=300,
-            scroll_filter=scroll_filter,
-            with_payload=True,
-            with_vectors=False,
-        )
+    points, _ = qdrant.scroll(
+        collection_name=RE_COLLECTION_NAME,
+        limit=300,
+        scroll_filter=scroll_filter,
+        with_payload=True,
+        with_vectors=False,
+    )
 
-        results = []
-        for pt in points:
-            p = pt.payload or {}
-            parsed = p.get("parsed_data") or {}
+    results = []
+    for pt in points:
+      p = pt.payload or {}
+      parsed = p.get("parsed_data") or {}
 
-            # Безопасное приведение цены к числу
-            try:
-                price = float(parsed.get("price_usd") or 0)
-            except (ValueError, TypeError):
-                price = 0.0
+      # Фильтрация по типу поста (Предложение vs Запрос)
+      item_post_type = p.get("post_type") or parsed.get("post_type") or "offer"
+      if item_post_type != post_type:
+        continue
 
-            # Безопасное приведение площади к числу
-            try:
-                area = float(parsed.get("area_sqm") or 0)
-            except (ValueError, TypeError):
-                area = 0.0
+      try:
+        price = float(parsed.get("price_usd") or 0)
+      except (ValueError, TypeError):
+        price = 0.0
 
-            rooms = parsed.get("rooms")
-            district = str(parsed.get("district") or "").lower()
-            address = str(parsed.get("address") or "").lower()
-            raw_text = str(p.get("raw_text") or "").lower()
-            is_broker = parsed.get("is_broker")
+      try:
+        area = float(parsed.get("area_sqm") or 0)
+      except (ValueError, TypeError):
+        area = 0.0
 
-            # Фильтрация "Только от хозяина"
-            if owner_only and is_broker is not False:
-                continue
+      rooms = parsed.get("rooms")
+      district = str(parsed.get("district") or "").lower()
+      address = str(parsed.get("address") or "").lower()
+      raw_text = str(p.get("raw_text") or "").lower()
+      is_broker = parsed.get("is_broker")
 
-            # Фильтрация по цене
-            if price > 0 and (price < min_price or price > max_price):
-                continue
+      if owner_only and is_broker is not False:
+        continue
 
-            # Фильтрация по площади
-            if area > 0 and (area < min_area or area > max_area):
-                continue
+      if price > 0 and (price < min_price or price > max_price):
+        continue
 
-            # Фильтрация по типу недвижимости
-            if property_type != "Все":
-                prop_key = property_type.lower()[:4]
-                combined_text = f"{district} {address} {raw_text}"
-                if prop_key not in combined_text:
-                    continue
+      if area > 0 and (area < min_area or area > max_area):
+        continue
 
-            # Фильтрация по комнатам
-            if rooms_filter != "Все":
-                try:
-                    rooms_cnt = int(rooms) if rooms is not None else 0
-                except (ValueError, TypeError):
-                    rooms_cnt = 0
+      if property_type != "Все":
+        prop_key = property_type.lower()[:4]
+        combined_text = f"{district} {address} {raw_text}"
+        if prop_key not in combined_text:
+          continue
 
-                if rooms_filter == "4+":
-                    if rooms_cnt < 4:
-                        continue
-                else:
-                    try:
-                        if rooms_cnt != int(rooms_filter):
-                            continue
-                    except ValueError:
-                        pass
+      if rooms_filter != "Все":
+        try:
+          rooms_cnt = int(rooms) if rooms is not None else 0
+        except (ValueError, TypeError):
+          rooms_cnt = 0
 
-            # Поиск по району / адресу
-            if district_query.strip():
-                dq = district_query.strip().lower()
-                if dq not in district and dq not in address and dq not in raw_text:
-                    continue
+        if rooms_filter == "4+":
+          if rooms_cnt < 4:
+            continue
+        else:
+          try:
+            if rooms_cnt != int(rooms_filter):
+              continue
+          except ValueError:
+            pass
 
-            results.append(p)
+      if district_query.strip():
+        dq = district_query.strip().lower()
+        if dq not in district and dq not in address and dq not in raw_text:
+          continue
 
-        # Безопасная сортировка по дате
-        return sorted(results, key=lambda x: str(x.get("created_at") or ""), reverse=True)
-    except Exception as e:
-        st.error(f"⚠️ Ошибка при выгрузке объектов из Qdrant: {e}")
-        return []
+      results.append(p)
+
+    return sorted(
+        results, key=lambda x: str(x.get("created_at") or ""), reverse=True
+    )
+  except Exception as e:
+    st.error(f"⚠️ Ошибка при выгрузке объектов из Qdrant: {e}")
+    return []
 
 
 # =====================================================================
 # 7. ИНИЦИАЛИЗАЦИЯ СЕССИИ И БД ПОЛЬЗОВАТЕЛЕЙ
 # =====================================================================
 if "users_db" not in st.session_state:
-    st.session_state.users_db = {
-        "owner": {
-            "password": hash_password("owner123"),
-            "role": "owner",
-            "name": "Олексій Марфенков",
-            "failed_attempts": 0,
-            "is_blocked": False,
-            "max_connections": 5,
-            "active_sessions": 0,
-        },
-        "admin": {
-            "password": hash_password("admin123"),
-            "role": "admin",
-            "name": "Администратор",
-            "failed_attempts": 0,
-            "is_blocked": False,
-            "max_connections": 3,
-            "active_sessions": 0,
-        },
-        "user": {
-            "password": hash_password("user123"),
-            "role": "user",
-            "name": "Менеджер",
-            "failed_attempts": 0,
-            "is_blocked": False,
-            "max_connections": 1,
-            "active_sessions": 0,
-        },
-    }
+  st.session_state.users_db = {
+      "owner": {
+          "password": hash_password("owner123"),
+          "role": "owner",
+          "name": "Олексій Марфенков",
+          "failed_attempts": 0,
+          "is_blocked": False,
+          "max_connections": 5,
+          "active_sessions": 0,
+      },
+      "admin": {
+          "password": hash_password("admin123"),
+          "role": "admin",
+          "name": "Администратор",
+          "failed_attempts": 0,
+          "is_blocked": False,
+          "max_connections": 3,
+          "active_sessions": 0,
+      },
+      "user": {
+          "password": hash_password("user123"),
+          "role": "user",
+          "name": "Менеджер",
+          "failed_attempts": 0,
+          "is_blocked": False,
+          "max_connections": 1,
+          "active_sessions": 0,
+      },
+  }
 
 if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
+  st.session_state.logged_in = False
 
 if "view_mode" not in st.session_state:
-    st.session_state.view_mode = "chat"
+  st.session_state.view_mode = "chat"
 
 if "projects" not in st.session_state or "sections" not in st.session_state:
-    db_projects, db_sections = load_system_config()
-    if db_projects and db_sections:
-        st.session_state.projects = db_projects
-        st.session_state.sections = db_sections
-    else:
-        st.session_state.sections = [
-            "Общий раздел",
-            "Продажи и CRM",
-            "Регламенты",
-            "Техническая часть",
-        ]
-        st.session_state.projects = {
-            "Общий проект": ["Общий раздел"],
-            "Creatio 2.0": ["Продажи и CRM", "Общий раздел"],
-            "КиберБез": ["Техническая часть", "Регламенты"],
-        }
-        save_system_config(st.session_state.projects, st.session_state.sections)
+  db_projects, db_sections = load_system_config()
+  if db_projects and db_sections:
+    st.session_state.projects = db_projects
+    st.session_state.sections = db_sections
+  else:
+    st.session_state.sections = [
+        "Общий раздел",
+        "Продажи и CRM",
+        "Регламенты",
+        "Техническая часть",
+    ]
+    st.session_state.projects = {
+        "Общий проект": ["Общий раздел"],
+        "Creatio 2.0": ["Продажи и CRM", "Общий раздел"],
+        "КиберБез": ["Техническая часть", "Регламенты"],
+    }
+    save_system_config(st.session_state.projects, st.session_state.sections)
 
 try:
-    existing_files_summary = get_db_files_summary()
-    for sec_key in existing_files_summary.keys():
-        if sec_key and sec_key not in st.session_state.sections:
-            st.session_state.sections.append(sec_key)
+  existing_files_summary = get_db_files_summary()
+  for sec_key in existing_files_summary.keys():
+    if sec_key and sec_key not in st.session_state.sections:
+      st.session_state.sections.append(sec_key)
 except Exception:
-    pass
+  pass
 
 if "active_chat_id" not in st.session_state:
-    st.session_state.active_chat_id = str(uuid.uuid4())
+  st.session_state.active_chat_id = str(uuid.uuid4())
 
 if "active_chat_title" not in st.session_state:
-    st.session_state.active_chat_title = "Новый чат"
+  st.session_state.active_chat_title = "Новый чат"
 
 if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
-        }
-    ]
+  st.session_state.messages = [{
+      "role": "assistant",
+      "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+  }]
 
 if "metrics_history" not in st.session_state:
-    st.session_state.metrics_history = []
+  st.session_state.metrics_history = []
 
 if "voice_key_counter" not in st.session_state:
-    st.session_state.voice_key_counter = 0
+  st.session_state.voice_key_counter = 0
 
 # =====================================================================
 # 8. АВТОМАТИЧЕСКИЙ ТАЙМ-АУТ СЕССИИ
 # =====================================================================
 if st.session_state.logged_in:
-    current_time = time.time()
-    last_act = st.session_state.get("last_activity_time", current_time)
+  current_time = time.time()
+  last_act = st.session_state.get("last_activity_time", current_time)
 
-    if (current_time - last_act) > (SESSION_TIMEOUT_MINUTES * 60):
-        c_user = st.session_state.get("current_user", {})
-        u_rec = st.session_state.users_db.get(c_user.get("username", ""))
-        if u_rec and u_rec.get("active_sessions", 0) > 0:
-            u_rec["active_sessions"] -= 1
+  if (current_time - last_act) > (SESSION_TIMEOUT_MINUTES * 60):
+    c_user = st.session_state.get("current_user", {})
+    u_rec = st.session_state.users_db.get(c_user.get("username", ""))
+    if u_rec and u_rec.get("active_sessions", 0) > 0:
+      u_rec["active_sessions"] -= 1
 
-        log_event(
-            "SESSION_TIMEOUT",
-            "Сессия автоматически завершена из-за неактивности"
-            f" ({SESSION_TIMEOUT_MINUTES} мин)",
-        )
-        st.session_state.logged_in = False
-        st.session_state.current_user = None
-        st.session_state.timeout_message = (
-            "⏳ Ваша сессия завершена автоматически из-за отсутствия активности"
-            f" более {SESSION_TIMEOUT_MINUTES} минут."
-        )
-        st.rerun()
-    else:
-        st.session_state.last_activity_time = current_time
+    log_event(
+        "SESSION_TIMEOUT",
+        "Сессия автоматически завершена из-за неактивности"
+        f" ({SESSION_TIMEOUT_MINUTES} мин)",
+    )
+    st.session_state.logged_in = False
+    st.session_state.current_user = None
+    st.session_state.timeout_message = (
+        "⏳ Ваша сессия завершена автоматически из-за отсутствия активности"
+        f" более {SESSION_TIMEOUT_MINUTES} минут."
+    )
+    st.rerun()
+  else:
+    st.session_state.last_activity_time = current_time
 
 # =====================================================================
 # 9. ЭКРАН ВХОДА В СИСТЕМУ
 # =====================================================================
 if not st.session_state.logged_in:
-    col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
-    with col_l2:
-        st.markdown(
-            "<h1 style='text-align: center;'>🤖 Вход в Mavbot AI</h1>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Корпоративная авторизация с контролем безопасности.")
+  col_l1, col_l2, col_l3 = st.columns([1, 2, 1])
+  with col_l2:
+    st.markdown(
+        "<h1 style='text-align: center;'>🤖 Вход в Mavbot AI</h1>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Корпоративная авторизация с контролем безопасности.")
 
-        if st.session_state.get("timeout_message"):
-            st.warning(st.session_state["timeout_message"])
-            st.session_state["timeout_message"] = None
+    if st.session_state.get("timeout_message"):
+      st.warning(st.session_state["timeout_message"])
+      st.session_state["timeout_message"] = None
 
-        client_ip = get_client_ip()
-        geo_info = get_geoip_details(client_ip)
-        st.info(
-            f"🌐 Ваш IP: `{client_ip}` | Страна:"
-            f" **{geo_info['country']}** ({geo_info['city']})"
-        )
+    client_ip = get_client_ip()
+    geo_info = get_geoip_details(client_ip)
+    st.info(
+        f"🌐 Ваш IP: `{client_ip}` | Страна:"
+        f" **{geo_info['country']}** ({geo_info['city']})"
+    )
 
-        with st.form("login_form"):
-            user_input = st.text_input("Логин:")
-            pass_input = st.text_input("Пароль:", type="password")
-            submit_login = st.form_submit_button(
-                "Войти в систему", use_container_width=True
+    with st.form("login_form"):
+      user_input = st.text_input("Логин:")
+      pass_input = st.text_input("Пароль:", type="password")
+      submit_login = st.form_submit_button(
+          "Войти в систему", use_container_width=True
+      )
+
+      if submit_login:
+        clean_user = user_input.strip().lower()
+        user_record = st.session_state.users_db.get(clean_user)
+
+        if not user_record:
+          st.error("Неверный логин или пароль")
+          log_event(
+              "LOGIN_FAILED",
+              f"Попытка входа с несуществующим логином '{clean_user}'",
+              ip=client_ip,
+              username=clean_user,
+              role="guest",
+          )
+        elif user_record.get("is_blocked", False):
+          st.error("❌ Ваш аккаунт заблокирован! Обратитесь к Собственнику.")
+          log_event(
+              "LOGIN_BLOCKED",
+              f"Попытка входа в заблокированный аккаунт '{clean_user}'",
+              ip=client_ip,
+              username=clean_user,
+              role=user_record.get("role", "guest"),
+          )
+        elif user_record.get("active_sessions", 0) >= user_record.get(
+            "max_connections", 1
+        ):
+          st.error(
+              "❌ Превышен лимит одновременных подключений"
+              f" ({user_record['max_connections']})!"
+          )
+          log_event(
+              "LOGIN_LIMIT_EXCEEDED",
+              f"Превышен лимит сессий для '{clean_user}'",
+              ip=client_ip,
+              username=clean_user,
+              role=user_record.get("role", "guest"),
+          )
+        elif user_record["password"] != hash_password(pass_input):
+          user_record["failed_attempts"] = (
+              user_record.get("failed_attempts", 0) + 1
+          )
+          attempts = user_record["failed_attempts"]
+
+          if attempts >= 3:
+            user_record["is_blocked"] = True
+            log_event(
+                "AUTO_BLOCK",
+                "Автоматическая блокировка аккаунта"
+                f" '{clean_user}' после 3 ошибок",
+                ip=client_ip,
+                username=clean_user,
+                role=user_record.get("role", "guest"),
             )
+            st.error(
+                "❌ Аккаунт заблокирован из-за 3 неверных попыток ввода пароля!"
+            )
+          else:
+            log_event(
+                "LOGIN_FAILED",
+                f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)",
+                ip=client_ip,
+                username=clean_user,
+                role=user_record.get("role", "guest"),
+            )
+            st.error(f"Неверный пароль! Осталось попыток: {3 - attempts}")
+        else:
+          user_record["failed_attempts"] = 0
+          user_record["active_sessions"] = (
+              user_record.get("active_sessions", 0) + 1
+          )
 
-            if submit_login:
-                clean_user = user_input.strip().lower()
-                user_record = st.session_state.users_db.get(clean_user)
+          st.session_state.logged_in = True
+          st.session_state.last_activity_time = time.time()
+          st.session_state.current_user = {
+              "username": clean_user,
+              "role": user_record["role"],
+              "name": user_record["name"],
+              "ip": client_ip,
+              "country": geo_info["country"],
+              "city": geo_info["city"],
+          }
+          log_event(
+              "LOGIN_SUCCESS",
+              f"Успешный вход пользователя '{user_record['name']}'",
+              ip=client_ip,
+              username=clean_user,
+              role=user_record["role"],
+          )
+          st.success("Успешная авторизация!")
+          st.rerun()
 
-                if not user_record:
-                    st.error("Неверный логин или пароль")
-                    log_event(
-                        "LOGIN_FAILED",
-                        f"Попытка входа с несуществующим логином '{clean_user}'",
-                        ip=client_ip,
-                        username=clean_user,
-                        role="guest",
-                    )
-                elif user_record.get("is_blocked", False):
-                    st.error("❌ Ваш аккаунт заблокирован! Обратитесь к Собственнику.")
-                    log_event(
-                        "LOGIN_BLOCKED",
-                        f"Попытка входа в заблокированный аккаунт '{clean_user}'",
-                        ip=client_ip,
-                        username=clean_user,
-                        role=user_record.get("role", "guest"),
-                    )
-                elif user_record.get("active_sessions", 0) >= user_record.get(
-                    "max_connections", 1
-                ):
-                    st.error(
-                        "❌ Превышен лимит одновременных подключений"
-                        f" ({user_record['max_connections']})!"
-                    )
-                    log_event(
-                        "LOGIN_LIMIT_EXCEEDED",
-                        f"Превышен лимит сессий для '{clean_user}'",
-                        ip=client_ip,
-                        username=clean_user,
-                        role=user_record.get("role", "guest"),
-                    )
-                elif user_record["password"] != hash_password(pass_input):
-                    user_record["failed_attempts"] = (
-                        user_record.get("failed_attempts", 0) + 1
-                    )
-                    attempts = user_record["failed_attempts"]
-
-                    if attempts >= 3:
-                        user_record["is_blocked"] = True
-                        log_event(
-                            "AUTO_BLOCK",
-                            "Автоматическая блокировка аккаунта"
-                            f" '{clean_user}' после 3 ошибок",
-                            ip=client_ip,
-                            username=clean_user,
-                            role=user_record.get("role", "guest"),
-                        )
-                        st.error(
-                            "❌ Аккаунт заблокирован из-за 3 неверных попыток ввода пароля!"
-                        )
-                    else:
-                        log_event(
-                            "LOGIN_FAILED",
-                            f"Неверный пароль для '{clean_user}' (попытка {attempts}/3)",
-                            ip=client_ip,
-                            username=clean_user,
-                            role=user_record.get("role", "guest"),
-                        )
-                        st.error(f"Неверный пароль! Осталось попыток: {3 - attempts}")
-                else:
-                    user_record["failed_attempts"] = 0
-                    user_record["active_sessions"] = (
-                        user_record.get("active_sessions", 0) + 1
-                    )
-
-                    st.session_state.logged_in = True
-                    st.session_state.last_activity_time = time.time()
-                    st.session_state.current_user = {
-                        "username": clean_user,
-                        "role": user_record["role"],
-                        "name": user_record["name"],
-                        "ip": client_ip,
-                        "country": geo_info["country"],
-                        "city": geo_info["city"],
-                    }
-                    log_event(
-                        "LOGIN_SUCCESS",
-                        f"Успешный вход пользователя '{user_record['name']}'",
-                        ip=client_ip,
-                        username=clean_user,
-                        role=user_record["role"],
-                    )
-                    st.success("Успешная авторизация!")
-                    st.rerun()
-
-        st.divider()
-        with st.expander("🔑 Демо-учётные записи"):
-            st.markdown("""
+    st.divider()
+    with st.expander("🔑 Демо-учётные записи"):
+      st.markdown("""
                 * **👑 Собственник:** `owner` | `owner123` *(Max 5 подключений)*
                 * **🛠️ Администратор:** `admin` | `admin123` *(Max 3 подключения)*
                 * **👤 Пользователь:** `user` | `user123` *(Max 1 подключение)*
                 """)
-    st.stop()
+  st.stop()
 
 # =====================================================================
 # 10. MAVBOT БОКОВАЯ ПАНЕЛЬ (SIDEBAR)
@@ -1161,196 +1168,206 @@ role_badges = {
 }
 
 with st.sidebar:
-    # 1. Заголовок логотипа Mavbot
-    st.markdown(
-        '<div class="mavbot-header"><span class="mavbot-icon">🤖</span>'
-        " <span>Mavbot</span></div>",
-        unsafe_allow_html=True,
+  # 1. Заголовок логотипа Mavbot
+  st.markdown(
+      '<div class="mavbot-header"><span class="mavbot-icon">🤖</span>'
+      " <span>Mavbot</span></div>",
+      unsafe_allow_html=True,
+  )
+
+  # 2. Кнопки навигации
+  col_nav1, col_nav2 = st.columns([1, 1])
+  with col_nav1:
+    if st.button("➕ Чат", use_container_width=True, key="btn_new_chat"):
+      st.session_state.view_mode = "chat"
+      st.session_state.active_chat_id = str(uuid.uuid4())
+      st.session_state.active_chat_title = "Новый чат"
+      st.session_state.messages = [{
+          "role": "assistant",
+          "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+      }]
+      st.rerun()
+  with col_nav2:
+    btn_re_label = (
+        "🏠 Недвижимость"
+        if st.session_state.view_mode != "real_estate"
+        else "📌 🏠 Недвижимость"
     )
+    if st.button(
+        btn_re_label, use_container_width=True, key="btn_real_estate_mode"
+    ):
+      st.session_state.view_mode = "real_estate"
+      st.rerun()
 
-    # 2. Кнопки навигации
-    col_nav1, col_nav2 = st.columns([1, 1])
-    with col_nav1:
-        if st.button("➕ Чат", use_container_width=True, key="btn_new_chat"):
-            st.session_state.view_mode = "chat"
-            st.session_state.active_chat_id = str(uuid.uuid4())
-            st.session_state.active_chat_title = "Новый чат"
-            st.session_state.messages = [{
-                "role": "assistant",
-                "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
-            }]
-            st.rerun()
-    with col_nav2:
-        btn_re_label = "🏠 Недвижимость" if st.session_state.view_mode != "real_estate" else "📌 🏠 Недвижимость"
-        if st.button(btn_re_label, use_container_width=True, key="btn_real_estate_mode"):
-            st.session_state.view_mode = "real_estate"
-            st.rerun()
+  # 3. Поиск по чатам
+  search_query = st.text_input(
+      "🔍 Поиск по чатам",
+      placeholder="Искать в переписках...",
+      label_visibility="collapsed",
+  )
 
-    # 3. Поиск по чатам
-    search_query = st.text_input(
-        "🔍 Поиск по чатам",
-        placeholder="Искать в переписках...",
-        label_visibility="collapsed",
-    )
+  # 4. Раздел "Блокноты" (Проекты)
+  st.markdown(
+      '<div class="recent-title">Блокноты</div>', unsafe_allow_html=True
+  )
 
-    # 4. Раздел "Блокноты" (Проекты)
-    st.markdown(
-        '<div class="recent-title">Блокноты</div>', unsafe_allow_html=True
-    )
+  project_names = list(st.session_state.projects.keys())
+  selected_project = st.selectbox(
+      "Выберите проект:", project_names, label_visibility="collapsed"
+  )
+  st.session_state.selected_project = selected_project
+  active_sections = st.session_state.projects.get(selected_project, [])
 
-    project_names = list(st.session_state.projects.keys())
-    selected_project = st.selectbox(
-        "Выберите проект:", project_names, label_visibility="collapsed"
-    )
-    st.session_state.selected_project = selected_project
-    active_sections = st.session_state.projects.get(selected_project, [])
+  if user_role in ["admin", "owner"]:
+    with st.expander("➕ Новый блокнот"):
+      new_proj_name = st.text_input(
+          "Название блокнота:", key="input_new_proj_name"
+      )
+      chosen_sections = st.multiselect(
+          "Разделы:",
+          options=st.session_state.sections,
+          default=(
+              [st.session_state.sections[0]] if st.session_state.sections else []
+          ),
+          key="ms_create_project",
+      )
+      if st.button("Сохранить блокнот", use_container_width=True):
+        if new_proj_name and new_proj_name not in st.session_state.projects:
+          st.session_state.projects[new_proj_name] = chosen_sections
+          save_system_config(
+              st.session_state.projects, st.session_state.sections
+          )
+          log_event(
+              "CREATE_PROJECT",
+              f"Создан проект '{new_proj_name}': {chosen_sections}",
+          )
+          st.success(f"Блокнот '{new_proj_name}' создан!")
+          st.rerun()
 
-    if user_role in ["admin", "owner"]:
-        with st.expander("➕ Новый блокнот"):
-            new_proj_name = st.text_input(
-                "Название блокнота:", key="input_new_proj_name"
-            )
-            chosen_sections = st.multiselect(
-                "Разделы:",
-                options=st.session_state.sections,
-                default=(
-                    [st.session_state.sections[0]]
-                    if st.session_state.sections
-                    else []
-                ),
-                key="ms_create_project",
-            )
-            if st.button("Сохранить блокнот", use_container_width=True):
-                if (
-                    new_proj_name
-                    and new_proj_name not in st.session_state.projects
-                ):
-                    st.session_state.projects[new_proj_name] = chosen_sections
-                    save_system_config(
-                        st.session_state.projects, st.session_state.sections
-                    )
-                    log_event(
-                        "CREATE_PROJECT",
-                        f"Создан проект '{new_proj_name}': {chosen_sections}",
-                    )
-                    st.success(f"Блокнот '{new_proj_name}' создан!")
-                    st.rerun()
+  # 5. Раздел "Недавние" (Recents)
+  st.markdown(
+      '<div class="recent-title">Недавние</div>', unsafe_allow_html=True
+  )
 
-    # 5. Раздел "Недавние" (Recents)
-    st.markdown(
-        '<div class="recent-title">Недавние</div>', unsafe_allow_html=True
-    )
+  recent_threads = get_recent_chat_threads(user_data["username"])
 
-    recent_threads = get_recent_chat_threads(user_data["username"])
+  if search_query:
+    recent_threads = [
+        t for t in recent_threads if search_query.lower() in t["title"].lower()
+    ]
 
-    if search_query:
-        recent_threads = [
-            t
-            for t in recent_threads
-            if search_query.lower() in t["title"].lower()
-        ]
+  if not recent_threads:
+    st.caption("Нет недавних диалогов")
+  else:
+    for thread in recent_threads[:20]:
+      t_id = thread["chat_id"]
+      t_title = thread["title"]
+      is_pinned = thread.get("is_pinned", False)
 
-    if not recent_threads:
-        st.caption("Нет недавних диалогов")
-    else:
-        for thread in recent_threads[:20]:
-            t_id = thread["chat_id"]
-            t_title = thread["title"]
-            is_pinned = thread.get("is_pinned", False)
+      display_title = t_title[:24] + ("..." if len(t_title) > 24 else "")
 
-            display_title = t_title[:24] + ("..." if len(t_title) > 24 else "")
+      is_active = (
+          t_id == st.session_state.active_chat_id
+          and st.session_state.view_mode == "chat"
+      )
 
-            is_active = (
-                t_id == st.session_state.active_chat_id
-                and st.session_state.view_mode == "chat"
-            )
-            
-            prefix = "📌 " if is_pinned else "💬 "
+      prefix = "📌 " if is_pinned else "💬 "
 
-            c_btn, c_opt = st.columns([5, 1])
+      c_btn, c_opt = st.columns([5, 1])
 
-            with c_btn:
-                if st.button(
-                    f"{prefix}{display_title}", key=f"rec_{t_id}", use_container_width=True
-                ):
-                    st.session_state.view_mode = "chat"
-                    st.session_state.active_chat_id = t_id
-                    msgs, proj, title_loaded = load_chat_thread_by_id(t_id)
-                    st.session_state.messages = (
-                        msgs
-                        if msgs
-                        else [{
-                            "role": "assistant",
-                            "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
-                        }]
-                    )
-                    st.session_state.active_chat_title = title_loaded
-                    st.rerun()
-
-            with c_opt:
-                with st.popover("⋮", use_container_width=True):
-                    # 1. 📌 Закрепить / Открепить
-                    pin_btn_label = "📌 Открепить" if is_pinned else "📌 Закрепить"
-                    if st.button(pin_btn_label, key=f"act_pin_{t_id}", use_container_width=True):
-                        toggle_pin_chat_thread(t_id, not is_pinned)
-                        st.rerun()
-
-                    # 2. ✏️ Переименовать
-                    with st.expander("✏️ Переименовать"):
-                        new_t_title = st.text_input(
-                            "Название:", value=t_title, key=f"ren_input_{t_id}"
-                        )
-                        if st.button("Сохранить", key=f"act_ren_sub_{t_id}", use_container_width=True):
-                            if new_t_title.strip():
-                                rename_chat_thread(t_id, new_t_title.strip())
-                                st.rerun()
-
-                    # 3. 🔗 Поделиться
-                    if st.button("🔗 Поделиться", key=f"act_share_{t_id}", use_container_width=True):
-                        share_url = f"https://mavbot.ai/chat?id={t_id}"
-                        st.toast(f"Ссылка скопирована: {share_url}", icon="🔗")
-
-                    # 4. 📋 Копировать
-                    if st.button("📋 Копировать", key=f"act_copy_{t_id}", use_container_width=True):
-                        msgs, _, _ = load_chat_thread_by_id(t_id)
-                        chat_text = "\n\n".join(
-                            [f"{m['role'].upper()}: {m['content']}" for m in msgs]
-                        )
-                        st.toast("Текст диалога скопирован в буфер!", icon="📋")
-
-                    # 5. 🗑️ Удалить
-                    if st.button("🗑️ Удалить", key=f"act_del_{t_id}", use_container_width=True, type="primary"):
-                        delete_chat_thread(t_id)
-                        if st.session_state.active_chat_id == t_id:
-                            st.session_state.active_chat_id = str(uuid.uuid4())
-                            st.session_state.active_chat_title = "Новый чат"
-                            st.session_state.messages = [{
-                                "role": "assistant",
-                                "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
-                            }]
-                        st.rerun()
-
-    # --- РАЗДЕЛИТЕЛЬ СВАЙПБАРА ---
-    st.markdown("---")
-
-    # --- ПОЛЕ: КНОПКА "НАСТРОЙКИ" ---
-    if user_role in ["admin", "owner"]:
-        btn_settings_label = (
-            "⚙️ Настройки"
-            if st.session_state.view_mode != "settings"
-            else "📌 ⚙️ Настройки"
-        )
+      with c_btn:
         if st.button(
-            btn_settings_label, use_container_width=True, key="btn_settings_sidebar"
+            f"{prefix}{display_title}",
+            key=f"rec_{t_id}",
+            use_container_width=True,
         ):
-            st.session_state.view_mode = "settings"
+          st.session_state.view_mode = "chat"
+          st.session_state.active_chat_id = t_id
+          msgs, proj, title_loaded = load_chat_thread_by_id(t_id)
+          st.session_state.messages = (
+              msgs
+              if msgs
+              else [{
+                  "role": "assistant",
+                  "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+              }]
+          )
+          st.session_state.active_chat_title = title_loaded
+          st.rerun()
+
+      with c_opt:
+        with st.popover("⋮", use_container_width=True):
+          pin_btn_label = "📌 Открепить" if is_pinned else "📌 Закрепить"
+          if st.button(
+              pin_btn_label, key=f"act_pin_{t_id}", use_container_width=True
+          ):
+            toggle_pin_chat_thread(t_id, not is_pinned)
             st.rerun()
 
-        st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+          with st.expander("✏️ Переименовать"):
+            new_t_title = st.text_input(
+                "Название:", value=t_title, key=f"ren_input_{t_id}"
+            )
+            if st.button(
+                "Сохранить",
+                key=f"act_ren_sub_{t_id}",
+                use_container_width=True,
+            ):
+              if new_t_title.strip():
+                rename_chat_thread(t_id, new_t_title.strip())
+                st.rerun()
 
-    # 6. Карточка пользователя внизу сайдбара
-    st.markdown(
-        f"""
+          if st.button(
+              "🔗 Поделиться", key=f"act_share_{t_id}", use_container_width=True
+          ):
+            share_url = f"https://mavbot.ai/chat?id={t_id}"
+            st.toast(f"Ссылка скопирована: {share_url}", icon="🔗")
+
+          if st.button(
+              "📋 Копировать", key=f"act_copy_{t_id}", use_container_width=True
+          ):
+            msgs, _, _ = load_chat_thread_by_id(t_id)
+            chat_text = "\n\n".join(
+                [f"{m['role'].upper()}: {m['content']}" for m in msgs]
+            )
+            st.toast("Текст диалога скопирован в буфер!", icon="📋")
+
+          if st.button(
+              "🗑️ Удалить",
+              key=f"act_del_{t_id}",
+              use_container_width=True,
+              type="primary",
+          ):
+            delete_chat_thread(t_id)
+            if st.session_state.active_chat_id == t_id:
+              st.session_state.active_chat_id = str(uuid.uuid4())
+              st.session_state.active_chat_title = "Новый чат"
+              st.session_state.messages = [{
+                  "role": "assistant",
+                  "content": "Здравствуйте! Чем я могу помочь вам сегодня?",
+              }]
+            st.rerun()
+
+  st.markdown("---")
+
+  if user_role in ["admin", "owner"]:
+    btn_settings_label = (
+        "⚙️ Настройки"
+        if st.session_state.view_mode != "settings"
+        else "📌 ⚙️ Настройки"
+    )
+    if st.button(
+        btn_settings_label,
+        use_container_width=True,
+        key="btn_settings_sidebar",
+    ):
+      st.session_state.view_mode = "settings"
+      st.rerun()
+
+    st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
+
+  st.markdown(
+      f"""
         <div class="user-profile-card">
             <div class="user-avatar">{user_data['name'][0].upper()}</div>
             <div style="flex-grow: 1; overflow: hidden;">
@@ -1363,225 +1380,223 @@ with st.sidebar:
             </div>
         </div>
         """,
-        unsafe_allow_html=True,
+      unsafe_allow_html=True,
+  )
+
+  st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+
+  col_sub_exp, col_sub_out = st.columns([1, 1])
+  with col_sub_exp:
+    pdf_bytes = generate_pdf_report(
+        selected_project, st.session_state.get("messages", [])
     )
-
-    st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
-
-    col_sub_exp, col_sub_out = st.columns([1, 1])
-    with col_sub_exp:
-        pdf_bytes = generate_pdf_report(
-            selected_project, st.session_state.get("messages", [])
-        )
-        st.download_button(
-            "📄 PDF",
-            data=pdf_bytes,
-            file_name=f"report_{selected_project}.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
-    with col_sub_out:
-        if st.button("🚪 Выйти", use_container_width=True):
-            u_rec = st.session_state.users_db.get(user_data["username"])
-            if u_rec and u_rec.get("active_sessions", 0) > 0:
-                u_rec["active_sessions"] -= 1
-            log_event("LOGOUT", "Выход из системы")
-            st.session_state.logged_in = False
-            st.session_state.current_user = None
-            st.rerun()
+    st.download_button(
+        "📄 PDF",
+        data=pdf_bytes,
+        file_name=f"report_{selected_project}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+  with col_sub_out:
+    if st.button("🚪 Выйти", use_container_width=True):
+      u_rec = st.session_state.users_db.get(user_data["username"])
+      if u_rec and u_rec.get("active_sessions", 0) > 0:
+        u_rec["active_sessions"] -= 1
+      log_event("LOGOUT", "Выход из системы")
+      st.session_state.logged_in = False
+      st.session_state.current_user = None
+      st.rerun()
 
 # =====================================================================
 # 11. ОСНОВНОЙ ИНТЕРФЕЙС (ЧАТ / НЕ ДВИЖИМОСТЬ / НАСТРОЙКИ)
 # =====================================================================
 if st.session_state.view_mode == "chat":
-    # ---------------------------------------------------------------------
-    # РЕЖИМ 1: ЧАТ И ГОЛОСОВОЙ ВВОД
-    # ---------------------------------------------------------------------
-    st.title(f"🤖 Mavbot — [{selected_project}]")
+  # ---------------------------------------------------------------------
+  # РЕЖИМ 1: ЧАТ И ГОЛОСОВОЙ ВВОД
+  # ---------------------------------------------------------------------
+  st.title(f"🤖 Mavbot — [{selected_project}]")
 
-    for msg_idx, msg in enumerate(st.session_state.messages):
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+  for msg_idx, msg in enumerate(st.session_state.messages):
+    with st.chat_message(msg["role"]):
+      st.write(msg["content"])
 
-            if msg["role"] == "assistant" and msg_idx > 0:
-                c_fb1, c_fb2, _ = st.columns([1, 1, 10])
-                user_prompt_text = (
-                    st.session_state.messages[msg_idx - 1]["content"]
-                    if msg_idx > 0
-                    else "Вопрос не найден"
-                )
-
-                with c_fb1:
-                    if st.button("👍", key=f"pos_{msg_idx}"):
-                        log_event(
-                            "FEEDBACK_POSITIVE",
-                            f"Вопрос: '{user_prompt_text}' | Отклик: Отличный ответ",
-                        )
-                        st.toast("Спасибо за оценку! 👍", icon="✅")
-                with c_fb2:
-                    if st.button("👎", key=f"neg_{msg_idx}"):
-                        st.session_state[f"show_dislike_form_{msg_idx}"] = True
-
-                if st.session_state.get(f"show_dislike_form_{msg_idx}", False):
-                    with st.form(key=f"dislike_form_{msg_idx}"):
-                        st.caption("📝 **Опишите, что именно не так в ответе:**")
-                        user_comment = st.text_input(
-                            "Замечание:",
-                            placeholder=(
-                                "Например: устаревший регламент, неточная формулировка..."
-                            ),
-                            key=f"comment_input_{msg_idx}",
-                        )
-                        if st.form_submit_button(
-                            "Отправить отзыв", use_container_width=True
-                        ):
-                            comment_text = (
-                                user_comment.strip()
-                                if user_comment.strip()
-                                else "Без описания"
-                            )
-                            full_log_details = (
-                                f"Вопрос: '{user_prompt_text}' | Комментарий:"
-                                f" '{comment_text}'"
-                            )
-                            log_event("FEEDBACK_NEGATIVE", full_log_details)
-                            st.toast(
-                                "Спасибо! Замечание сохранено и передано администраторам 📝",
-                                icon="📝",
-                            )
-                            st.session_state[f"show_dislike_form_{msg_idx}"] = False
-                            st.rerun()
-
-    st.markdown("---")
-    c_v1, c_v2 = st.columns([2, 5])
-    with c_v1:
-        st.write("🎙️ **Задать вопрос голосом:**")
-        audio_value = st.audio_input(
-            "Запись аудио",
-            key=f"voice_recorder_{st.session_state.voice_key_counter}",
-            label_visibility="collapsed",
+      if msg["role"] == "assistant" and msg_idx > 0:
+        c_fb1, c_fb2, _ = st.columns([1, 1, 10])
+        user_prompt_text = (
+            st.session_state.messages[msg_idx - 1]["content"]
+            if msg_idx > 0
+            else "Вопрос не найден"
         )
 
-    prompt = None
+        with c_fb1:
+          if st.button("👍", key=f"pos_{msg_idx}"):
+            log_event(
+                "FEEDBACK_POSITIVE",
+                f"Вопрос: '{user_prompt_text}' | Отклик: Отличный ответ",
+            )
+            st.toast("Спасибо за оценку! 👍", icon="✅")
+        with c_fb2:
+          if st.button("👎", key=f"neg_{msg_idx}"):
+            st.session_state[f"show_dislike_form_{msg_idx}"] = True
 
-    if audio_value is not None:
-        with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
-            try:
-                audio_bytes = audio_value.read()
-                audio_file = io.BytesIO(audio_bytes)
-                audio_file.name = "audio.wav"
+        if st.session_state.get(f"show_dislike_form_{msg_idx}", False):
+          with st.form(key=f"dislike_form_{msg_idx}"):
+            st.caption("📝 **Опишите, что именно не так в ответе:**")
+            user_comment = st.text_input(
+                "Замечание:",
+                placeholder=(
+                    "Например: устаревший регламент, неточная формулировка..."
+                ),
+                key=f"comment_input_{msg_idx}",
+            )
+            if st.form_submit_button(
+                "Отправить отзыв", use_container_width=True
+            ):
+              comment_text = (
+                  user_comment.strip() if user_comment.strip() else "Без описания"
+              )
+              full_log_details = (
+                  f"Вопрос: '{user_prompt_text}' | Комментарий:"
+                  f" '{comment_text}'"
+              )
+              log_event("FEEDBACK_NEGATIVE", full_log_details)
+              st.toast(
+                  "Спасибо! Замечание сохранено и передано администраторам 📝",
+                  icon="📝",
+              )
+              st.session_state[f"show_dislike_form_{msg_idx}"] = False
+              st.rerun()
 
-                transcription = groq_client.audio.transcriptions.create(
-                    file=audio_file,
-                    model="whisper-large-v3-turbo",
-                    prompt="Запрос на русском языке по базе знаний",
-                    response_format="text",
-                )
-                prompt = str(transcription).strip()
-                st.session_state.voice_key_counter += 1
-                log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
-
-                log_analytics(
-                    "Web",
-                    user_data.get("username"),
-                    user_data.get("name"),
-                    "Голосовой запрос",
-                    prompt,
-                )
-                st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
-            except Exception as e:
-                st.error(f"Ошибка распознавания голоса: {e}")
-
-    text_prompt = st.chat_input(
-        f"Спросите что-нибудь по проекту '{selected_project}'..."
+  st.markdown("---")
+  c_v1, c_v2 = st.columns([2, 5])
+  with c_v1:
+    st.write("🎙️ **Задать вопрос голосом:**")
+    audio_value = st.audio_input(
+        "Запись аудио",
+        key=f"voice_recorder_{st.session_state.voice_key_counter}",
+        label_visibility="collapsed",
     )
-    if text_prompt:
-        prompt = text_prompt
 
-    if prompt:
-        st.session_state.messages.append({"role": "user", "content": prompt})
+  prompt = None
 
-        if (
-            len(st.session_state.messages) <= 3
-            or st.session_state.active_chat_title == "Новый чат"
-        ):
-            st.session_state.active_chat_title = prompt[:35] + (
-                "..." if len(prompt) > 35 else ""
-            )
+  if audio_value is not None:
+    with st.spinner("🎙️ Распознавание голоса через Groq Whisper..."):
+      try:
+        audio_bytes = audio_value.read()
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "audio.wav"
 
-        with st.spinner("Поиск ответа в базе знаний..."):
-            t_start = time.perf_counter()
+        transcription = groq_client.audio.transcriptions.create(
+            file=audio_file,
+            model="whisper-large-v3-turbo",
+            prompt="Запрос на русском языке по базе знаний",
+            response_format="text",
+        )
+        prompt = str(transcription).strip()
+        st.session_state.voice_key_counter += 1
+        log_event("VOICE_INPUT", f"Распознано: '{prompt}'")
 
-            query_vector = get_cloud_embedding(prompt)
+        log_analytics(
+            "Web",
+            user_data.get("username"),
+            user_data.get("name"),
+            "Голосовой запрос",
+            prompt,
+        )
+        st.toast(f"🎙️ Голос распознан: '{prompt}'", icon="🗣️")
+      except Exception as e:
+        st.error(f"Ошибка распознавания голоса: {e}")
 
-            t_qdrant_start = time.perf_counter()
-            search_results = []
+  text_prompt = st.chat_input(
+      f"Спросите что-нибудь по проекту '{selected_project}'..."
+  )
+  if text_prompt:
+    prompt = text_prompt
 
-            if active_sections:
-                search_filter = Filter(
-                    must=[
-                        FieldCondition(
-                            key="section", match=MatchAny(any=active_sections)
-                        )
-                    ]
+  if prompt:
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    if (
+        len(st.session_state.messages) <= 3
+        or st.session_state.active_chat_title == "Новый чат"
+    ):
+      st.session_state.active_chat_title = prompt[:35] + (
+          "..." if len(prompt) > 35 else ""
+      )
+
+    with st.spinner("Поиск ответа в базе знаний..."):
+      t_start = time.perf_counter()
+
+      query_vector = get_cloud_embedding(prompt)
+
+      t_qdrant_start = time.perf_counter()
+      search_results = []
+
+      if active_sections:
+        search_filter = Filter(
+            must=[
+                FieldCondition(
+                    key="section", match=MatchAny(any=active_sections)
                 )
-                try:
-                    response = qdrant.query_points(
-                        collection_name=COLLECTION_NAME,
-                        query=query_vector,
-                        query_filter=search_filter,
-                        limit=5,
-                    )
-                    search_results = response.points
-                except Exception:
-                    search_results = []
+            ]
+        )
+        try:
+          response = qdrant.query_points(
+              collection_name=COLLECTION_NAME,
+              query=query_vector,
+              query_filter=search_filter,
+              limit=5,
+          )
+          search_results = response.points
+        except Exception:
+          search_results = []
 
-            if not search_results:
-                try:
-                    response = qdrant.query_points(
-                        collection_name=COLLECTION_NAME, query=query_vector, limit=5
-                    )
-                    search_results = response.points
-                except Exception:
-                    search_results = []
+      if not search_results:
+        try:
+          response = qdrant.query_points(
+              collection_name=COLLECTION_NAME, query=query_vector, limit=5
+          )
+          search_results = response.points
+        except Exception:
+          search_results = []
 
-            t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
-            max_score = (
-                max([hit.score for hit in search_results]) if search_results else 0.0
-            )
+      t_qdrant = (time.perf_counter() - t_qdrant_start) * 1000
+      max_score = (
+          max([hit.score for hit in search_results]) if search_results else 0.0
+      )
 
-            log_analytics(
-                source="Web",
-                user_id=user_data.get("username"),
-                username=user_data.get("name"),
-                event_type="Текстовый запрос",
-                query=prompt,
-                score=max_score,
-                status="Успешно" if max_score >= 0.20 else "Не найдено в БЗ",
-            )
+      log_analytics(
+          source="Web",
+          user_id=user_data.get("username"),
+          username=user_data.get("name"),
+          event_type="Текстовый запрос",
+          query=prompt,
+          score=max_score,
+          status="Успешно" if max_score >= 0.20 else "Не найдено в БЗ",
+      )
 
-            if not search_results or max_score < 0.20:
-                answer = (
-                    "К сожалению, в базе знаний пока нет подробных инструкций по этому"
-                    " вопросу. Запрос передан администраторам."
-                )
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": answer}
-                )
-                log_event(
-                    "KNOWLEDGE_GAP",
-                    f"Вопрос без ответа: '{prompt}' (Релевантность:"
-                    f" {max_score*100:.1f}%)",
-                )
-            else:
-                context_chunks = [
-                    f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл:"
-                    f" {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
-                    for hit in search_results
-                ]
-                context = "\n\n---\n\n".join(context_chunks)
+      if not search_results or max_score < 0.20:
+        answer = (
+            "К сожалению, в базе знаний пока нет подробных инструкций по этому"
+            " вопросу. Запрос передан администраторам."
+        )
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
+        log_event(
+            "KNOWLEDGE_GAP",
+            f"Вопрос без ответа: '{prompt}' (Релевантность:"
+            f" {max_score*100:.1f}%)",
+        )
+      else:
+        context_chunks = [
+            f"[Раздел: {hit.payload.get('section', 'Общий')} | Файл:"
+            f" {hit.payload.get('source_file', 'Документ')}]\n{hit.payload.get('text', '')}"
+            for hit in search_results
+        ]
+        context = "\n\n---\n\n".join(context_chunks)
 
-                llm_prompt = f"""Ты — высококвалифицированный корпоративный AI-ассистент базы знаний проекта "{selected_project}".
+        llm_prompt = f"""Ты — высококвалифицированный корпоративный AI-ассистент базы знаний проекта "{selected_project}".
 Твоя задача — давать точные, профессиональные и структурированные ответы.
 
 --- ПРАВИЛА И ОГРАНИЧЕНИЯ ---
@@ -1598,154 +1613,247 @@ if st.session_state.view_mode == "chat":
 
 --- ОТВЕТ ---"""
 
-                t_llm_start = time.perf_counter()
-                res = groq_client.chat.completions.create(
-                    model="llama-3.1-8b-instant",
-                    messages=[{"role": "user", "content": llm_prompt}],
-                    temperature=0.1,
-                )
-                t_llm = time.perf_counter() - t_llm_start
-                t_total = time.perf_counter() - t_start
-
-                answer = res.choices[0].message.content
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": answer}
-                )
-
-                log_event(
-                    "QUERY",
-                    f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' |"
-                    f" Токены: {res.usage.total_tokens}",
-                )
-
-                st.session_state.metrics_history.append({
-                    "Запрос №": len(st.session_state.metrics_history) + 1,
-                    "Входные токены": res.usage.prompt_tokens,
-                    "Выходные токены": res.usage.completion_tokens,
-                    "Всего токенов": res.usage.total_tokens,
-                    "Время ответа (сек)": round(t_total, 2),
-                    "Поиск Qdrant (мс)": round(t_qdrant, 0),
-                    "Проект": selected_project,
-                })
-
-        save_chat_thread(
-            chat_id=st.session_state.active_chat_id,
-            username=user_data["username"],
-            project=selected_project,
-            title=st.session_state.active_chat_title,
-            messages=st.session_state.messages,
+        t_llm_start = time.perf_counter()
+        res = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": llm_prompt}],
+            temperature=0.1,
         )
-        st.rerun()
+        t_llm = time.perf_counter() - t_llm_start
+        t_total = time.perf_counter() - t_start
+
+        answer = res.choices[0].message.content
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
+
+        log_event(
+            "QUERY",
+            f"Проект '{selected_project}' | Вопрос: '{prompt[:40]}...' |"
+            f" Токены: {res.usage.total_tokens}",
+        )
+
+        st.session_state.metrics_history.append({
+            "Запрос №": len(st.session_state.metrics_history) + 1,
+            "Входные токены": res.usage.prompt_tokens,
+            "Выходные токены": res.usage.completion_tokens,
+            "Всего токенов": res.usage.total_tokens,
+            "Время ответа (сек)": round(t_total, 2),
+            "Поиск Qdrant (мс)": round(t_qdrant, 0),
+            "Проект": selected_project,
+        })
+
+    save_chat_thread(
+        chat_id=st.session_state.active_chat_id,
+        username=user_data["username"],
+        project=selected_project,
+        title=st.session_state.active_chat_title,
+        messages=st.session_state.messages,
+    )
+    st.rerun()
 
 elif st.session_state.view_mode == "real_estate":
-    # ---------------------------------------------------------------------
-    # РЕЖИМ 2: БАЗА НЕДВИЖИМОСТИ С ВЫПАДАЮЩИМИ ФИЛЬТРАМИ
-    # ---------------------------------------------------------------------
-    st.title("🏠 Мониторинг Недвижимости Telegram")
-    st.caption("База объектов в реальном времени с интерактивными фильтрами поиска.")
+  # ---------------------------------------------------------------------
+  # РЕЖИМ 2: БАЗА НЕДВИЖИМОСТИ С ВЫПАДАЮЩИМИ ФИЛЬТРАМИ И РАЗДЕЛЕНИЕМ ВКЛАДОК
+  # ---------------------------------------------------------------------
+  st.title("🏠 Мониторинг Недвижимости Telegram")
+  st.caption(
+      "Автоматический отсев спама и разделение предложений объектов и"
+      " клиентских запросов."
+  )
 
-    re_tabs = st.tabs(["📊 База объектов и фильтры", "🤖 AI-Подбор под запрос"])
+  re_tabs = st.tabs([
+      "🏢 Предложения (Объекты)",
+      "🔍 Запросы клиентов (Ищут жилье)",
+      "🤖 AI-Подбор под запрос",
+  ])
 
-    # --- ВКЛАДКА 1: БАЗА ОБЪЕКТОВ ---
-    with re_tabs[0]:
-        # Горизонтальная панель выпадающих фильтров (Popover Bar)
-        col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+  # --- ВКЛАДКИ 1 И 2: ПРЕДЛОЖЕНИЯ И ЗАПРОСЫ ---
+  for tab_idx, target_type in enumerate(["offer", "demand"]):
+    with re_tabs[tab_idx]:
+      col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
 
-        with col_f1:
-            with st.popover("🏡 Собственник ˅", use_container_width=True):
-                st.markdown("**Источник объявления**")
-                f_owner_only = st.checkbox("🏡 Только от хозяина (без комиссии)", value=False, key="re_pop_owner")
-                f_deal_type = st.radio("Тип сделки:", ["Все", "Снять", "Купить"], key="re_pop_deal")
+      with col_f1:
+        with st.popover(
+            "🏡 Источник / Сделка ˅",
+            use_container_width=True,
+            key=f"p1_{target_type}",
+        ):
+          st.markdown("**Источник и Сделка**")
+          f_owner_only = st.checkbox(
+              "🏡 Только от хозяина", value=False, key=f"re_owner_{target_type}"
+          )
+          f_deal_type = st.radio(
+              "Тип сделки:",
+              ["Все", "Снять", "Купить"],
+              key=f"re_deal_{target_type}",
+          )
 
-        with col_f2:
-            with st.popover("🏠 Тип объекта ˅", use_container_width=True):
-                st.markdown("**Тип недвижимости**")
-                f_prop_type = st.selectbox(
-                    "Выберите тип:",
-                    ["Все", "Квартира", "Дом", "Комната", "Коммерческая", "Участок", "Гараж"],
-                    key="re_pop_prop"
-                )
+      with col_f2:
+        with st.popover(
+            "🏠 Тип объекта ˅",
+            use_container_width=True,
+            key=f"p2_{target_type}",
+        ):
+          st.markdown("**Тип недвижимости**")
+          f_prop_type = st.selectbox(
+              "Выберите тип:",
+              [
+                  "Все",
+                  "Квартира",
+                  "Дом",
+                  "Комната",
+                  "Коммерческая",
+                  "Участок",
+                  "Гараж",
+              ],
+              key=f"re_prop_{target_type}",
+          )
 
-        with col_f3:
-            with st.popover("💰 Цена ($) ˅", use_container_width=True):
-                st.markdown("**Диапазон цен (USD)**")
-                c_p1, c_p2 = st.columns(2)
-                with c_p1:
-                    f_min_price = st.number_input("От ($):", min_value=0, max_value=500000, value=0, step=100, key="re_pop_pmin")
-                with c_p2:
-                    f_max_price = st.number_input("До ($):", min_value=0, max_value=1000000, value=5000, step=500, key="re_pop_pmax")
+      with col_f3:
+        with st.popover(
+            "💰 Цена ($) ˅", use_container_width=True, key=f"p3_{target_type}"
+        ):
+          st.markdown("**Диапазон цен (USD)**")
+          c_p1, c_p2 = st.columns(2)
+          with c_p1:
+            f_min_price = st.number_input(
+                "От ($):",
+                min_value=0,
+                max_value=500000,
+                value=0,
+                step=100,
+                key=f"re_pmin_{target_type}",
+            )
+          with c_p2:
+            f_max_price = st.number_input(
+                "До ($):",
+                min_value=0,
+                max_value=1000000,
+                value=500000,
+                step=500,
+                key=f"re_pmax_{target_type}",
+            )
 
-        with col_f4:
-            with st.popover("🚪 Комнаты ˅", use_container_width=True):
-                st.markdown("**Количество комнат**")
-                f_rooms = st.radio("Комнат:", ["Все", "1", "2", "3", "4+"], key="re_pop_rooms")
+      with col_f4:
+        with st.popover(
+            "🚪 Комнаты ˅", use_container_width=True, key=f"p4_{target_type}"
+        ):
+          st.markdown("**Количество комнат**")
+          f_rooms = st.radio(
+              "Комнат:",
+              ["Все", "1", "2", "3", "4+"],
+              key=f"re_rooms_{target_type}",
+          )
 
-        with col_f5:
-            with st.popover("⚙️ Еще фильтры ˅", use_container_width=True):
-                st.markdown("**Дополнительные параметры**")
-                c_a1, c_a2 = st.columns(2)
-                with c_a1:
-                    f_min_area = st.number_input("Площадь от (м²):", min_value=0, max_value=2000, value=0, step=5, key="re_pop_amin")
-                with c_a2:
-                    f_max_area = st.number_input("Площадь до (м²):", min_value=0, max_value=2000, value=500, step=10, key="re_pop_amax")
-                f_district = st.text_input("Район / Улица / ЖК:", placeholder="Печерский, Франко...", key="re_pop_district")
+      with col_f5:
+        with st.popover(
+            "⚙️ Доп. фильтры ˅",
+            use_container_width=True,
+            key=f"p5_{target_type}",
+        ):
+          st.markdown("**Дополнительные параметры**")
+          c_a1, c_a2 = st.columns(2)
+          with c_a1:
+            f_min_area = st.number_input(
+                "Площадь от (м²):",
+                min_value=0,
+                max_value=2000,
+                value=0,
+                step=5,
+                key=f"re_amin_{target_type}",
+            )
+          with c_a2:
+            f_max_area = st.number_input(
+                "Площадь до (м²):",
+                min_value=0,
+                max_value=2000,
+                value=500,
+                step=10,
+                key=f"re_amax_{target_type}",
+            )
+          f_district = st.text_input(
+              "Район / Улица / ЖК:",
+              placeholder="Печерский, Франко...",
+              key=f"re_dist_{target_type}",
+          )
 
-        # Вывод меток активных фильтров
-        active_tags = []
-        if f_owner_only: active_tags.append("Только от хозяина")
-        if f_deal_type != "Все": active_tags.append(f"Сделка: {f_deal_type}")
-        if f_prop_type != "Все": active_tags.append(f"Тип: {f_prop_type}")
-        if f_min_price > 0 or f_max_price < 1000000: active_tags.append(f"Цена: ${f_min_price} - ${f_max_price}")
-        if f_rooms != "Все": active_tags.append(f"Комнат: {f_rooms}")
-        if f_min_area > 0 or f_max_area < 500: active_tags.append(f"Площадь: {f_min_area} - {f_max_area} м²")
-        if f_district.strip(): active_tags.append(f"Поиск: '{f_district.strip()}'")
+      active_tags = []
+      if f_owner_only:
+        active_tags.append("Только от хозяина")
+      if f_deal_type != "Все":
+        active_tags.append(f"Сделка: {f_deal_type}")
+      if f_prop_type != "Все":
+        active_tags.append(f"Тип: {f_prop_type}")
+      if f_min_price > 0 or f_max_price < 500000:
+        active_tags.append(f"Цена: ${f_min_price} - ${f_max_price}")
+      if f_rooms != "Все":
+        active_tags.append(f"Комнат: {f_rooms}")
+      if f_district.strip():
+        active_tags.append(f"Поиск: '{f_district.strip()}'")
 
-        if active_tags:
-            st.caption("Активные фильтры: " + " | ".join([f"`{tag}`" for tag in active_tags]))
-
-        # Загрузка объектов из Qdrant
-        listings = fetch_real_estate_listings(
-            deal_type=f_deal_type,
-            property_type=f_prop_type,
-            min_price=f_min_price,
-            max_price=f_max_price,
-            min_area=f_min_area,
-            max_area=f_max_area,
-            rooms_filter=f_rooms,
-            owner_only=f_owner_only,
-            district_query=f_district,
+      if active_tags:
+        st.caption(
+            "Активные фильтры: "
+            + " | ".join([f"`{tag}`" for tag in active_tags])
         )
 
-        st.markdown(f"Найдено уникальных объектов: **{len(listings)}**")
-        st.divider()
+      listings = fetch_real_estate_listings(
+          post_type=target_type,
+          deal_type=f_deal_type,
+          property_type=f_prop_type,
+          min_price=f_min_price,
+          max_price=f_max_price,
+          min_area=f_min_area,
+          max_area=f_max_area,
+          rooms_filter=f_rooms,
+          owner_only=f_owner_only,
+          district_query=f_district,
+      )
 
-        if not listings:
-            st.info("Объекты не найдены. Измените параметры фильтров или дождитесь новых постов из Telegram.")
-        else:
-            for item in listings:
-                parsed = item.get("parsed_data") or {}
-                
-                try:
-                    price_val = float(parsed.get("price_usd") or 0)
-                    price_str = f"${int(price_val):,}" if price_val > 0 else "Цена не указана"
-                except (ValueError, TypeError):
-                    price_str = "Цена не указана"
+      st.markdown(f"Найдено релевантных записей: **{len(listings)}**")
+      st.divider()
 
-                deal_lbl = "Аренда" if parsed.get("deal_type") == "rent" else "Продажа"
-                rooms_lbl = f"{parsed.get('rooms')} к." if parsed.get("rooms") else "Комнаты не указаны"
-                area_lbl = f"{parsed.get('area_sqm')} м²" if parsed.get("area_sqm") else ""
-                district_lbl = parsed.get("district") or "Район не указан"
-                address_lbl = parsed.get("address") or ""
-                phone_lbl = parsed.get("phone") or "Телефон не указан"
-                is_broker = parsed.get("is_broker")
+      if not listings:
+        st.info(
+            "Записи не найдены. Измените параметры фильтров или дождитесь новых"
+            " постов из Telegram."
+        )
+      else:
+        for item in listings:
+          parsed = item.get("parsed_data") or {}
 
-                broker_tag = (
-                    '<span class="re-badge-owner">🏡 От хозяина</span>'
-                    if is_broker is False
-                    else '<span class="re-badge">👔 Риелтор / Агентство</span>'
-                )
+          try:
+            price_val = float(parsed.get("price_usd") or 0)
+            price_str = (
+                f"${int(price_val):,}" if price_val > 0 else "Цена не указана"
+            )
+          except (ValueError, TypeError):
+            price_str = "Цена не указана"
 
-                card_html = f"""<div class="re-card">
+          deal_lbl = (
+              "Аренда" if parsed.get("deal_type") == "rent" else "Продажа"
+          )
+          rooms_lbl = (
+              f"{parsed.get('rooms')} к."
+              if parsed.get("rooms")
+              else "Комнаты не указаны"
+          )
+          area_lbl = (
+              f"{parsed.get('area_sqm')} м²" if parsed.get("area_sqm") else ""
+          )
+          district_lbl = parsed.get("district") or "Район не указан"
+          address_lbl = parsed.get("address") or ""
+          phone_lbl = parsed.get("phone") or "Телефон не указан"
+          is_broker = parsed.get("is_broker")
+
+          broker_tag = (
+              '<span class="re-badge-owner">🏡 От хозяина</span>'
+              if is_broker is False
+              else '<span class="re-badge">👔 Риелтор / Агентство</span>'
+          )
+
+          card_html = f"""<div class="re-card">
 <div style="display: flex; justify-content: space-between; align-items: center;">
 <span class="re-price">{price_str}</span>
 <div>
@@ -1763,42 +1871,52 @@ elif st.session_state.view_mode == "real_estate":
 </div>
 </div>"""
 
-                st.markdown(card_html, unsafe_allow_html=True)
+          st.markdown(card_html, unsafe_allow_html=True)
 
-                with st.expander("📄 Описание из Telegram"):
-                    st.text(item.get("raw_text", ""))
+          with st.expander("📄 Описание из Telegram"):
+            st.text(item.get("raw_text", ""))
 
-    # --- ВКЛАДКА 2: AI ПОДБОР ---
-    with re_tabs[1]:
-        st.subheader("🤖 Интеллектуальный поиск квартир по всей базе")
-        ai_re_prompt = st.text_input(
-            "Опишите желаемый объект простыми словами:",
-            placeholder="Например: Найди тихую 2-комнатную на Печерске до $1200 с хорошим ремонтом",
-            key="input_ai_re_prompt",
-        )
+  # --- ВКЛАДКА 3: AI ПОДБОР ---
+  with re_tabs[2]:
+    st.subheader("🤖 Интеллектуальный поиск квартир по всей базе")
+    ai_re_prompt = st.text_input(
+        "Опишите желаемый объект простыми словами:",
+        placeholder=(
+            "Например: Найди тихую 2-комнатную на Печерске до $1200 с хорошим"
+            " ремонтом"
+        ),
+        key="input_ai_re_prompt",
+    )
 
-        if ai_re_prompt and st.button("🔍 Найти подходящие варианты", use_container_width=True):
-            with st.spinner("Векторный поиск по базе недвижимости + анализ Groq..."):
-                query_vec = get_cloud_embedding(ai_re_prompt)
-                try:
-                    search_res = qdrant.query_points(
-                        collection_name=RE_COLLECTION_NAME, query=query_vec, limit=8
-                    ).points
+    if ai_re_prompt and st.button(
+        "🔍 Найти подходящие варианты", use_container_width=True
+    ):
+      with st.spinner(
+          "Векторный поиск по базе недвижимости + анализ Groq..."
+      ):
+        query_vec = get_cloud_embedding(ai_re_prompt)
+        try:
+          search_res = qdrant.query_points(
+              collection_name=RE_COLLECTION_NAME, query=query_vec, limit=8
+          ).points
 
-                    if not search_res:
-                        st.warning("К сожалению, подходящих вариантов в базе пока нет.")
-                    else:
-                        context_blocks = []
-                        for hit in search_res:
-                            p = hit.payload or {}
-                            parsed = p.get("parsed_data", {})
-                            context_blocks.append(
-                                f"Объект: {parsed.get('deal_type')}, Комнат: {parsed.get('rooms')}, "
-                                f"Цена: ${parsed.get('price_usd')}, Район: {parsed.get('district')}, "
-                                f"Адрес: {parsed.get('address')}, Описание: {p.get('raw_text', '')}"
-                            )
+          if not search_res:
+            st.warning("К сожалению, подходящих вариантов в базе пока нет.")
+          else:
+            context_blocks = []
+            for hit in search_res:
+              p = hit.payload or {}
+              parsed = p.get("parsed_data", {})
+              context_blocks.append(
+                  f"Тип: {p.get('post_type')}, Сделка: {parsed.get('deal_type')},"
+                  f" Комнат: {parsed.get('rooms')}, "
+                  f"Цена: ${parsed.get('price_usd')}, Район:"
+                  f" {parsed.get('district')}, "
+                  f"Адрес: {parsed.get('address')}, Описание:"
+                  f" {p.get('raw_text', '')}"
+              )
 
-                        llm_re_prompt = f"""Ты — профессиональный риелтор-консультант.
+            llm_re_prompt = f"""Ты — профессиональный риелтор-консультант.
 Пользователь ищет недвижимость по запросу: "{ai_re_prompt}".
 
 Вот варианты из нашей актуальной базы данных Telegram:
@@ -1807,659 +1925,633 @@ elif st.session_state.view_mode == "real_estate":
 Сформируй для пользователя красиво оформленную подборку объектов. 
 Укажи цены, районы, ключевые плюсы каждого варианта и прямые рекомендации."""
 
-                        res = groq_client.chat.completions.create(
-                            model="llama-3.1-8b-instant",
-                            messages=[{"role": "user", "content": llm_re_prompt}],
-                            temperature=0.2,
-                        )
-                        st.markdown(res.choices[0].message.content)
-                except Exception as e:
-                    st.error(f"Ошибка поиска: {e}")
+            res = groq_client.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[{"role": "user", "content": llm_re_prompt}],
+                temperature=0.2,
+            )
+            st.markdown(res.choices[0].message.content)
+        except Exception as e:
+          st.error(f"Ошибка поиска: {e}")
 
 else:
-    # ---------------------------------------------------------------------
-    # РЕЖИМ 3: НАСТРОЙКИ (ПОЛЕ 2 СО ВСЕМИ ВКЛАДКАМИ)
-    # ---------------------------------------------------------------------
-    col_head1, col_head2 = st.columns([4, 1])
-    with col_head1:
-        st.title(f"⚙️ Настройки системы — [{selected_project}]")
-    with col_head2:
-        if st.button("💬 Вернуться в чат", use_container_width=True):
-            st.session_state.view_mode = "chat"
+  # ---------------------------------------------------------------------
+  # РЕЖИМ 3: НАСТРОЙКИ (ПОЛЕ 2 СО ВСЕМИ ВКЛАДКАМИ)
+  # ---------------------------------------------------------------------
+  col_head1, col_head2 = st.columns([4, 1])
+  with col_head1:
+    st.title(f"⚙️ Настройки системы — [{selected_project}]")
+  with col_head2:
+    if st.button("💬 Вернуться в чат", use_container_width=True):
+      st.session_state.view_mode = "chat"
+      st.rerun()
+
+  settings_tab_titles = []
+  if user_role in ["admin", "owner"]:
+    settings_tab_titles.extend(
+        ["📁 Загрузка документов", "🗂️ Управление файлами", "📈 Аналитика"]
+    )
+  if user_role == "owner":
+    settings_tab_titles.extend([
+        "📜 Полный Журнал Логов",
+        "🗺️ Карта Входов (GeoIP)",
+        "💡 Пробелы в знаниях & Отзывы",
+        "👥 Управление Аккаунтами",
+    ])
+
+  s_tabs = st.tabs(settings_tab_titles)
+  s_tab_dict = {title: tab for title, tab in zip(settings_tab_titles, s_tabs)}
+
+  if "📁 Загрузка документов" in s_tab_dict:
+    with s_tab_dict["📁 Загрузка документов"]:
+      st.subheader("📁 Пополнение Базы Знаний (PDF, Word, Text, Markdown)")
+      col_up1, col_up2 = st.columns([2, 1])
+
+      with col_up1:
+        target_section = st.selectbox(
+            "Целевой раздел:", st.session_state.sections
+        )
+      with col_up2:
+        new_sec_input = st.text_input("➕ Новый раздел:")
+        if st.button("Добавить раздел", use_container_width=True):
+          if new_sec_input and new_sec_input not in st.session_state.sections:
+            st.session_state.sections.append(new_sec_input)
+            save_system_config(
+                st.session_state.projects, st.session_state.sections
+            )
+            log_event("CREATE_SECTION", f"Создан раздел '{new_sec_input}'")
+            st.success(f"Раздел '{new_sec_input}' создан!")
             st.rerun()
 
-    # Формирование всех вкладок
-    settings_tab_titles = []
-    if user_role in ["admin", "owner"]:
-        settings_tab_titles.extend(
-            ["📁 Загрузка документов", "🗂️ Управление файлами", "📈 Аналитика"]
+      st.divider()
+      uploaded_files = st.file_uploader(
+          "Перетащите файлы (`.pdf`, `.docx`, `.txt`, `.md`):",
+          type=["pdf", "docx", "txt", "md"],
+          accept_multiple_files=True,
+      )
+
+      if uploaded_files and st.button(
+          f"🚀 Векторизовать и загрузить в '{target_section}'",
+          use_container_width=True,
+      ):
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[
+                ("#", "Header 1"),
+                ("##", "Header 2"),
+                ("###", "Header 3"),
+            ],
+            strip_headers=False,
         )
-    if user_role == "owner":
-        settings_tab_titles.extend([
-            "📜 Полный Журнал Логов",
-            "🗺️ Карта Входов (GeoIP)",
-            "💡 Пробелы в знаниях & Отзывы",
-            "👥 Управление Аккаунтами",
-        ])
 
-    s_tabs = st.tabs(settings_tab_titles)
-    s_tab_dict = {
-        title: tab for title, tab in zip(settings_tab_titles, s_tabs)
-    }
+        all_points = []
+        with st.spinner(
+            "Извлечение текста, нарезка на чанки и векторизация..."
+        ):
+          for file in uploaded_files:
+            fname = file.name
+            extracted_text = extract_text_from_file(file)
 
-    # --- ВКЛАДКА: ЗАГРУЗКА ДОКУМЕНТОВ ---
-    if "📁 Загрузка документов" in s_tab_dict:
-        with s_tab_dict["📁 Загрузка документов"]:
-            st.subheader("📁 Пополнение Базы Знаний (PDF, Word, Text, Markdown)")
-            col_up1, col_up2 = st.columns([2, 1])
+            if not extracted_text.strip():
+              st.warning(
+                  f"Файл '{fname}' пуст или из него не удалось извлечь текст."
+              )
+              continue
 
-            with col_up1:
-                target_section = st.selectbox(
-                    "Целевой раздел:", st.session_state.sections
-                )
-            with col_up2:
-                new_sec_input = st.text_input("➕ Новый раздел:")
-                if st.button("Добавить раздел", use_container_width=True):
-                    if new_sec_input and new_sec_input not in st.session_state.sections:
-                        st.session_state.sections.append(new_sec_input)
-                        save_system_config(
-                            st.session_state.projects, st.session_state.sections
-                        )
-                        log_event("CREATE_SECTION", f"Создан раздел '{new_sec_input}'")
-                        st.success(f"Раздел '{new_sec_input}' создан!")
-                        st.rerun()
+            if fname.lower().endswith(".md"):
+              chunks_md = markdown_splitter.split_text(extracted_text)
+              texts = (
+                  [c.page_content for c in chunks_md]
+                  if chunks_md
+                  else [extracted_text]
+              )
+              metadatas = (
+                  [c.metadata for c in chunks_md] if chunks_md else [{}]
+              )
+            else:
+              texts = split_text_into_chunks(extracted_text)
+              metadatas = [{}] * len(texts)
 
-            st.divider()
-            uploaded_files = st.file_uploader(
-                "Перетащите файлы (`.pdf`, `.docx`, `.txt`, `.md`):",
-                type=["pdf", "docx", "txt", "md"],
-                accept_multiple_files=True,
+            for idx, text_chunk in enumerate(texts):
+              emb = get_cloud_embedding(text_chunk)
+              all_points.append(
+                  PointStruct(
+                      id=uuid.uuid4().hex,
+                      vector=emb,
+                      payload={
+                          "text": text_chunk,
+                          "source_file": fname,
+                          "section": target_section,
+                          **metadatas[idx],
+                      },
+                  )
+              )
+
+          if all_points:
+            qdrant.upsert(collection_name=COLLECTION_NAME, points=all_points)
+            log_event(
+                "UPLOAD_FILES",
+                f"Загружено {len(uploaded_files)} файлов ({len(all_points)}"
+                f" чанков) в раздел '{target_section}'",
+            )
+            log_analytics(
+                "Web",
+                user_data.get("username"),
+                user_data.get("name"),
+                "Загрузка документа",
+                f"Файлов: {len(uploaded_files)}",
+                score=1.0,
+                status="Загружено",
             )
 
-            if uploaded_files and st.button(
-                f"🚀 Векторизовать и загрузить в '{target_section}'",
-                use_container_width=True,
-            ):
-                markdown_splitter = MarkdownHeaderTextSplitter(
-                    headers_to_split_on=[
-                        ("#", "Header 1"),
-                        ("##", "Header 2"),
-                        ("###", "Header 3"),
-                    ],
-                    strip_headers=False,
-                )
+            st.success(
+                f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего"
+                f" {len(all_points)} чанков)!"
+            )
+            st.rerun()
 
-                all_points = []
-                with st.spinner(
-                    "Извлечение текста, нарезка на чанки и векторизация..."
-                ):
-                    for file in uploaded_files:
-                        fname = file.name
-                        extracted_text = extract_text_from_file(file)
+  if "🗂️ Управление файлами" in s_tab_dict:
+    with s_tab_dict["🗂️ Управление файлами"]:
+      st.subheader("🗂️ Управление документами")
+      files_by_sec = get_db_files_summary()
 
-                        if not extracted_text.strip():
-                            st.warning(
-                                f"Файл '{fname}' пуст или из него не удалось извлечь текст."
-                            )
-                            continue
+      if not files_by_sec:
+        st.info("Файлы отсутствуют.")
+      else:
+        for sec_name, files_dict in files_by_sec.items():
+          with st.expander(
+              f"📁 Раздел: **{sec_name}** ({len(files_dict)} файлов)",
+              expanded=True,
+          ):
+            for fname, chunk_cnt in files_dict.items():
+              c1, c2 = st.columns([3, 1])
+              with c1:
+                st.write(f"📄 **{fname}** (`{chunk_cnt} чанков`)")
+                other_secs = [
+                    s for s in st.session_state.sections if s != sec_name
+                ]
+                if other_secs:
+                  dest_s = st.selectbox(
+                      "Переместить в:", other_secs, key=f"s_{sec_name}_{fname}"
+                  )
+                  if st.button("🚚 Переместить", key=f"m_{sec_name}_{fname}"):
+                    pts, _ = qdrant.scroll(
+                        collection_name=COLLECTION_NAME,
+                        scroll_filter=Filter(
+                            must=[
+                                FieldCondition(
+                                    key="source_file",
+                                    match=MatchValue(value=fname),
+                                ),
+                                FieldCondition(
+                                    key="section",
+                                    match=MatchValue(value=sec_name),
+                                ),
+                            ]
+                        ),
+                        limit=10000,
+                        with_payload=False,
+                        with_vectors=False,
+                    )
+                    p_ids = [p.id for p in pts]
+                    if p_ids:
+                      qdrant.set_payload(
+                          collection_name=COLLECTION_NAME,
+                          payload={"section": dest_s},
+                          points=p_ids,
+                      )
+                      log_event(
+                          "MOVE_FILE",
+                          f"Файл '{fname}' из '{sec_name}' в '{dest_s}'",
+                      )
+                      st.success("Перемещено!")
+                      st.rerun()
 
-                        if fname.lower().endswith(".md"):
-                            chunks_md = markdown_splitter.split_text(extracted_text)
-                            texts = (
-                                [c.page_content for c in chunks_md]
-                                if chunks_md
-                                else [extracted_text]
-                            )
-                            metadatas = (
-                                [c.metadata for c in chunks_md] if chunks_md else [{}]
-                            )
-                        else:
-                            texts = split_text_into_chunks(extracted_text)
-                            metadatas = [{}] * len(texts)
-
-                        for idx, text_chunk in enumerate(texts):
-                            emb = get_cloud_embedding(text_chunk)
-                            all_points.append(
-                                PointStruct(
-                                    id=uuid.uuid4().hex,
-                                    vector=emb,
-                                    payload={
-                                        "text": text_chunk,
-                                        "source_file": fname,
-                                        "section": target_section,
-                                        **metadatas[idx],
-                                    },
-                                )
-                            )
-
-                    if all_points:
-                        qdrant.upsert(
-                            collection_name=COLLECTION_NAME, points=all_points
-                        )
-                        log_event(
-                            "UPLOAD_FILES",
-                            f"Загружено {len(uploaded_files)} файлов ({len(all_points)}"
-                            f" чанков) в раздел '{target_section}'",
-                        )
-                        log_analytics(
-                            "Web",
-                            user_data.get("username"),
-                            user_data.get("name"),
-                            "Загрузка документа",
-                            f"Файлов: {len(uploaded_files)}",
-                            score=1.0,
-                            status="Загружено",
-                        )
-
-                        st.success(
-                            f"🎉 Успешно векторизовано файлов: {len(uploaded_files)} (всего"
-                            f" {len(all_points)} чанков)!"
-                        )
-                        st.rerun()
-
-    # --- ВКЛАДКА: УПРАВЛЕНИЕ ФАЙЛАМИ ---
-    if "🗂️ Управление файлами" in s_tab_dict:
-        with s_tab_dict["🗂️ Управление файлами"]:
-            st.subheader("🗂️ Управление документами")
-            files_by_sec = get_db_files_summary()
-
-            if not files_by_sec:
-                st.info("Файлы отсутствуют.")
-            else:
-                for sec_name, files_dict in files_by_sec.items():
-                    with st.expander(
-                        f"📁 Раздел: **{sec_name}** ({len(files_dict)} файлов)",
-                        expanded=True,
-                    ):
-                        for fname, chunk_cnt in files_dict.items():
-                            c1, c2 = st.columns([3, 1])
-                            with c1:
-                                st.write(f"📄 **{fname}** (`{chunk_cnt} чанков`)")
-                                other_secs = [
-                                    s for s in st.session_state.sections if s != sec_name
-                                ]
-                                if other_secs:
-                                    dest_s = st.selectbox(
-                                        "Переместить в:",
-                                        other_secs,
-                                        key=f"s_{sec_name}_{fname}",
-                                    )
-                                    if st.button(
-                                        "🚚 Переместить", key=f"m_{sec_name}_{fname}"
-                                    ):
-                                        pts, _ = qdrant.scroll(
-                                            collection_name=COLLECTION_NAME,
-                                            scroll_filter=Filter(
-                                                must=[
-                                                    FieldCondition(
-                                                        key="source_file",
-                                                        match=MatchValue(value=fname),
-                                                    ),
-                                                    FieldCondition(
-                                                        key="section",
-                                                        match=MatchValue(value=sec_name),
-                                                    ),
-                                                ]
-                                            ),
-                                            limit=10000,
-                                            with_payload=False,
-                                            with_vectors=False,
-                                        )
-                                        p_ids = [p.id for p in pts]
-                                        if p_ids:
-                                            qdrant.set_payload(
-                                                collection_name=COLLECTION_NAME,
-                                                payload={"section": dest_s},
-                                                points=p_ids,
-                                            )
-                                            log_event(
-                                                "MOVE_FILE",
-                                                f"Файл '{fname}' из '{sec_name}' в '{dest_s}'",
-                                            )
-                                            st.success("Перемещено!")
-                                            st.rerun()
-
-                            with c2:
-                                if st.button(
-                                    "🗑️ Удалить", key=f"d_{sec_name}_{fname}", type="primary"
-                                ):
-                                    pts, _ = qdrant.scroll(
-                                        collection_name=COLLECTION_NAME,
-                                        scroll_filter=Filter(
-                                            must=[
-                                                FieldCondition(
-                                                    key="source_file",
-                                                    match=MatchValue(value=fname),
-                                                ),
-                                                FieldCondition(
-                                                    key="section",
-                                                    match=MatchValue(value=sec_name),
-                                                ),
-                                            ]
-                                        ),
-                                        limit=10000,
-                                        with_payload=False,
-                                        with_vectors=False,
-                                    )
-                                    p_ids = [p.id for p in pts]
-                                    if p_ids:
-                                        qdrant.delete(
-                                            collection_name=COLLECTION_NAME,
-                                            points_selector=p_ids,
-                                        )
-                                        log_event(
-                                            "DELETE_FILE",
-                                            f"Файл '{fname}' удален из '{sec_name}'",
-                                        )
-                                        st.success("Удалено!")
-                                        st.rerun()
-                            st.divider()
-
-    # --- ВКЛАДКА: АНАЛИТИКА ---
-    if "📈 Аналитика" in s_tab_dict:
-        with s_tab_dict["📈 Аналитика"]:
-            st.subheader("📈 Статистика использования системы")
-
-            c_ref, _ = st.columns([1, 4])
-            with c_ref:
+              with c2:
                 if st.button(
-                    "🔄 Обновить данные аналитики", use_container_width=True
+                    "🗑️ Удалить", key=f"d_{sec_name}_{fname}", type="primary"
                 ):
+                  pts, _ = qdrant.scroll(
+                      collection_name=COLLECTION_NAME,
+                      scroll_filter=Filter(
+                          must=[
+                              FieldCondition(
+                                  key="source_file", match=MatchValue(value=fname)
+                              ),
+                              FieldCondition(
+                                  key="section", match=MatchValue(value=sec_name)
+                              ),
+                          ]
+                      ),
+                      limit=10000,
+                      with_payload=False,
+                      with_vectors=False,
+                  )
+                  p_ids = [p.id for p in pts]
+                  if p_ids:
+                    qdrant.delete(
+                        collection_name=COLLECTION_NAME,
+                        points_selector=p_ids,
+                    )
+                    log_event(
+                        "DELETE_FILE",
+                        f"Файл '{fname}' удален из '{sec_name}'",
+                    )
+                    st.success("Удалено!")
                     st.rerun()
+              st.divider()
 
-            try:
-                scroll_res, _ = qdrant.scroll(
-                    collection_name=ANALYTICS_COLLECTION,
-                    limit=1000,
-                    with_payload=True,
-                    with_vectors=False,
-                )
+  if "📈 Аналитика" in s_tab_dict:
+    with s_tab_dict["📈 Аналитика"]:
+      st.subheader("📈 Статистика использования системы")
 
-                if scroll_res:
-                    analytics_data = [pt.payload for pt in scroll_res if pt.payload]
-                    df_a = pd.DataFrame(analytics_data)
+      c_ref, _ = st.columns([1, 4])
+      with c_ref:
+        if st.button("🔄 Обновить данные аналитики", use_container_width=True):
+          st.rerun()
 
-                    total_q = len(df_a)
-                    tg_q = (
-                        len(df_a[df_a["source"] == "Telegram"])
-                        if "source" in df_a.columns
-                        else 0
-                    )
-                    web_q = (
-                        len(df_a[df_a["source"] == "Web"])
-                        if "source" in df_a.columns
-                        else 0
-                    )
+      try:
+        scroll_res, _ = qdrant.scroll(
+            collection_name=ANALYTICS_COLLECTION,
+            limit=1000,
+            with_payload=True,
+            with_vectors=False,
+        )
 
-                    success_count = (
-                        len(df_a[df_a["found_in_kb"] == True])
-                        if "found_in_kb" in df_a.columns
-                        else 0
-                    )
-                    success_pct = (
-                        round((success_count / total_q) * 100, 1) if total_q > 0 else 0
-                    )
+        if scroll_res:
+          analytics_data = [pt.payload for pt in scroll_res if pt.payload]
+          df_a = pd.DataFrame(analytics_data)
 
-                    m1, m2, m3, m4 = st.columns(4)
-                    m1.metric("Всего обращений", total_q)
-                    m2.metric("Из Telegram 📱", tg_q)
-                    m3.metric("Из Веб-чата 🌐", web_q)
-                    m4.metric("Найдено в БЗ 🎯", f"{success_pct}%")
+          total_q = len(df_a)
+          tg_q = (
+              len(df_a[df_a["source"] == "Telegram"])
+              if "source" in df_a.columns
+              else 0
+          )
+          web_q = (
+              len(df_a[df_a["source"] == "Web"])
+              if "source" in df_a.columns
+              else 0
+          )
 
-                    st.divider()
-                    col_ch1, col_ch2 = st.columns(2)
+          success_count = (
+              len(df_a[df_a["found_in_kb"] == True])
+              if "found_in_kb" in df_a.columns
+              else 0
+          )
+          success_pct = (
+              round((success_count / total_q) * 100, 1) if total_q > 0 else 0
+          )
 
-                    with col_ch1:
-                        st.markdown("### 📱 Распределение по источникам")
-                        if "source" in df_a.columns:
-                            st.bar_chart(df_a["source"].value_counts())
+          m1, m2, m3, m4 = st.columns(4)
+          m1.metric("Всего обращений", total_q)
+          m2.metric("Из Telegram 📱", tg_q)
+          m3.metric("Из Веб-чата 🌐", web_q)
+          m4.metric("Найдено в БЗ 🎯", f"{success_pct}%")
 
-                    with col_ch2:
-                        st.markdown("### 📊 Типы запросов и действий")
-                        if "event_type" in df_a.columns:
-                            st.bar_chart(df_a["event_type"].value_counts())
+          st.divider()
+          col_ch1, col_ch2 = st.columns(2)
 
-                    st.divider()
-                    st.markdown(
-                        "### 📜 Подробный журнал операций (Telegram & Web)"
-                    )
+          with col_ch1:
+            st.markdown("### 📱 Распределение по источникам")
+            if "source" in df_a.columns:
+              st.bar_chart(df_a["source"].value_counts())
 
-                    if "timestamp" in df_a.columns:
-                        df_a = df_a.sort_values(by="timestamp", ascending=False)
+          with col_ch2:
+            st.markdown("### 📊 Типы запросов и действий")
+            if "event_type" in df_a.columns:
+              st.bar_chart(df_a["event_type"].value_counts())
 
-                    show_cols = [
-                        c
-                        for c in [
-                            "timestamp",
-                            "source",
-                            "username",
-                            "event_type",
-                            "query",
-                            "score",
-                            "status",
-                        ]
-                        if c in df_a.columns
-                    ]
+          st.divider()
+          st.markdown("### 📜 Подробный журнал операций (Telegram & Web)")
 
-                    st.dataframe(
-                        df_a[show_cols],
-                        column_config={
-                            "timestamp": "Время (UTC)",
-                            "source": "Источник",
-                            "username": "Пользователь",
-                            "event_type": "Тип действия",
-                            "query": "Запрос / Файл",
-                            "score": "Точность (Score)",
-                            "status": "Результат",
-                        },
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                else:
-                    st.info(
-                        "Пока нет зафиксированных данных в аналитике Qdrant. Задайте"
-                        " вопрос в Telegram или Веб-чате!"
-                    )
+          if "timestamp" in df_a.columns:
+            df_a = df_a.sort_values(by="timestamp", ascending=False)
 
-            except Exception as e:
-                st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
+          show_cols = [
+              c
+              for c in [
+                  "timestamp",
+                  "source",
+                  "username",
+                  "event_type",
+                  "query",
+                  "score",
+                  "status",
+              ]
+              if c in df_a.columns
+          ]
 
-            if st.session_state.metrics_history:
-                st.divider()
-                st.markdown(
-                    "### ⚡ Метрики скорости и токенов текущей веб-сессии (Groq +"
-                    " Qdrant)"
-                )
+          st.dataframe(
+              df_a[show_cols],
+              column_config={
+                  "timestamp": "Время (UTC)",
+                  "source": "Источник",
+                  "username": "Пользователь",
+                  "event_type": "Тип действия",
+                  "query": "Запрос / Файл",
+                  "score": "Точность (Score)",
+                  "status": "Результат",
+              },
+              use_container_width=True,
+              hide_index=True,
+          )
+        else:
+          st.info(
+              "Пока нет зафиксированных данных в аналитике Qdrant. Задайте"
+              " вопрос в Telegram или Веб-чате!"
+          )
 
-                df_m = pd.DataFrame(st.session_state.metrics_history)
+      except Exception as e:
+        st.warning(f"Не удалось выгрузить данные из базы аналитики: {e}")
 
-                total_reqs = len(df_m)
-                total_tokens = df_m["Всего токенов"].sum()
-                avg_time = round(df_m["Время ответа (сек)"].mean(), 2)
-                avg_qdrant = round(df_m["Поиск Qdrant (мс)"].mean(), 0)
+      if st.session_state.metrics_history:
+        st.divider()
+        st.markdown(
+            "### ⚡ Метрики скорости и токенов текущей веб-сессии (Groq + Qdrant)"
+        )
 
-                GROQ_DAILY_LIMIT = 100000
-                tokens_used_pct = round((total_tokens / GROQ_DAILY_LIMIT) * 100, 2)
-                tokens_remaining = GROQ_DAILY_LIMIT - total_tokens
+        df_m = pd.DataFrame(st.session_state.metrics_history)
 
-                col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
-                col_m1.metric("Запросов в сессии", total_reqs)
-                col_m2.metric("Токенов за сессию", f"{total_tokens:,}")
-                col_m3.metric(
-                    "Остаток Groq TPD",
-                    f"{tokens_remaining:,}",
-                    f"-{tokens_used_pct}% лимита",
-                    delta_color="normal",
-                )
-                col_m4.metric("Средний ответ LLM", f"{avg_time} с")
-                col_m5.metric("Средний поиск Qdrant", f"{avg_qdrant:.0f} мс")
+        total_reqs = len(df_m)
+        total_tokens = df_m["Всего токенов"].sum()
+        avg_time = round(df_m["Время ответа (сек)"].mean(), 2)
+        avg_qdrant = round(df_m["Поиск Qdrant (мс)"].mean(), 0)
 
-                st.caption(
-                    f"📊 Расход суточного лимита Groq: **{total_tokens:,}** из"
-                    f" **100,000** токенов ({tokens_used_pct}%):"
-                )
-                st.progress(min(total_tokens / GROQ_DAILY_LIMIT, 1.0))
+        GROQ_DAILY_LIMIT = 100000
+        tokens_used_pct = round((total_tokens / GROQ_DAILY_LIMIT) * 100, 2)
+        tokens_remaining = GROQ_DAILY_LIMIT - total_tokens
 
-                st.markdown("---")
+        col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+        col_m1.metric("Запросов в сессии", total_reqs)
+        col_m2.metric("Токенов за сессию", f"{total_tokens:,}")
+        col_m3.metric(
+            "Остаток Groq TPD",
+            f"{tokens_remaining:,}",
+            f"-{tokens_used_pct}% лимита",
+            delta_color="normal",
+        )
+        col_m4.metric("Средний ответ LLM", f"{avg_time} с")
+        col_m5.metric("Средний поиск Qdrant", f"{avg_qdrant:.0f} мс")
 
-                col_s1, col_s2 = st.columns(2)
+        st.caption(
+            f"📊 Расход суточного лимита Groq: **{total_tokens:,}** из **100,000**"
+            f" токенов ({tokens_used_pct}%):"
+        )
+        st.progress(min(total_tokens / GROQ_DAILY_LIMIT, 1.0))
 
-                with col_s1:
-                    st.markdown(
-                        "##### 📊 Расход токенов по запросам (Prompt vs Generation)"
-                    )
-                    st.bar_chart(
-                        df_m.set_index("Запрос №")[
-                            ["Входные токены", "Выходные токены"]
-                        ]
-                    )
+        st.markdown("---")
 
-                with col_s2:
-                    st.markdown("##### ⏱️ Динамика задержки ответа (в секундах)")
-                    st.line_chart(
-                        df_m.set_index("Запрос №")[["Время ответа (сек)"]]
-                    )
+        col_s1, col_s2 = st.columns(2)
 
-                st.markdown("##### 📜 Подробный журнал сессии")
-                st.dataframe(
-                    df_m,
-                    column_config={
-                        "Запрос №": st.column_config.NumberColumn(
-                            "№", width="small"
-                        ),
-                        "Входные токены": st.column_config.NumberColumn(
-                            "Входные (Prompt)", format="%d"
-                        ),
-                        "Выходные токены": st.column_config.NumberColumn(
-                            "Выходные (Gen)", format="%d"
-                        ),
-                        "Всего токенов": st.column_config.NumberColumn(
-                            "Всего токенов", format="%d"
-                        ),
-                        "Время ответа (сек)": st.column_config.NumberColumn(
-                            "Время (сек)", format="%.2f s"
-                        ),
-                        "Поиск Qdrant (мс)": st.column_config.NumberColumn(
-                            "Qdrant (мс)", format="%d ms"
-                        ),
-                        "Проект": "Проект",
-                    },
-                    use_container_width=True,
-                    hide_index=True,
-                )
+        with col_s1:
+          st.markdown(
+              "##### 📊 Расход токенов по запросам (Prompt vs Generation)"
+          )
+          st.bar_chart(
+              df_m.set_index("Запрос №")[
+                  ["Входные токены", "Выходные токены"]
+              ]
+          )
 
-    # ОБЩИЕ ДАННЫЕ ЛОГОВ ДЛЯ ПОДВКЛАДОК БЕЗОПАСНОСТИ
-    logs_data = get_audit_logs()
-    df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
+        with col_s2:
+          st.markdown("##### ⏱️ Динамика задержки ответа (в секундах)")
+          st.line_chart(df_m.set_index("Запрос №")[["Время ответа (сек)"]])
 
-    # --- ВКЛАДКА: ПОЛНЫЙ ЖУРНАЛ ЛОГОВ ---
-    if "📜 Полный Журнал Логов" in s_tab_dict:
-        with s_tab_dict["📜 Полный Журнал Логов"]:
-            st.write("История всех действий фиксируется в Qdrant Cloud:")
-            if df_logs_all.empty:
-                st.info("Журнал аудита пуст.")
-            else:
-                st.dataframe(
-                    df_logs_all[[
-                        "timestamp",
-                        "username",
-                        "role",
-                        "ip",
-                        "country",
-                        "city",
-                        "action",
-                        "details",
-                    ]],
-                    use_container_width=True,
-                )
+        st.markdown("##### 📜 Подробный журнал сессии")
+        st.dataframe(
+            df_m,
+            column_config={
+                "Запрос №": st.column_config.NumberColumn("№", width="small"),
+                "Входные токены": st.column_config.NumberColumn(
+                    "Входные (Prompt)", format="%d"
+                ),
+                "Выходные токены": st.column_config.NumberColumn(
+                    "Выходные (Gen)", format="%d"
+                ),
+                "Всего токенов": st.column_config.NumberColumn(
+                    "Всего токенов", format="%d"
+                ),
+                "Время ответа (сек)": st.column_config.NumberColumn(
+                    "Время (сек)", format="%.2f s"
+                ),
+                "Поиск Qdrant (мс)": st.column_config.NumberColumn(
+                    "Qdrant (мс)", format="%d ms"
+                ),
+                "Проект": "Проект",
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
 
-    # --- ВКЛАДКА: КАРТА ВХОДОВ ---
-    if "🗺️ Карта Входов (GeoIP)" in s_tab_dict:
-        with s_tab_dict["🗺️ Карта Входов (GeoIP)"]:
-            st.markdown("### 🗺️ Интерактивная карта геопозиций входов")
-            st.caption(
-                "Отображение точек подключения пользователей на основе данных GeoIP:"
+  logs_data = get_audit_logs()
+  df_logs_all = pd.DataFrame(logs_data) if logs_data else pd.DataFrame()
+
+  if "📜 Полный Журнал Логов" in s_tab_dict:
+    with s_tab_dict["📜 Полный Журнал Логов"]:
+      st.write("История всех действий фиксируется в Qdrant Cloud:")
+      if df_logs_all.empty:
+        st.info("Журнал аудита пуст.")
+      else:
+        st.dataframe(
+            df_logs_all[[
+                "timestamp",
+                "username",
+                "role",
+                "ip",
+                "country",
+                "city",
+                "action",
+                "details",
+            ]],
+            use_container_width=True,
+        )
+
+  if "🗺️ Карта Входов (GeoIP)" in s_tab_dict:
+    with s_tab_dict["🗺️ Карта Входов (GeoIP)"]:
+      st.markdown("### 🗺️ Интерактивная карта геопозиций входов")
+      st.caption(
+          "Отображение точек подключения пользователей на основе данных GeoIP:"
+      )
+
+      if (
+          not df_logs_all.empty
+          and "lat" in df_logs_all.columns
+          and "lon" in df_logs_all.columns
+      ):
+        df_map_data = df_logs_all.dropna(subset=["lat", "lon"]).copy()
+        df_map_data["lat"] = pd.to_numeric(df_map_data["lat"], errors="coerce")
+        df_map_data["lon"] = pd.to_numeric(df_map_data["lon"], errors="coerce")
+        df_map_clean = df_map_data.dropna(subset=["lat", "lon"])
+
+        if not df_map_clean.empty:
+          st.map(df_map_clean[["lat", "lon"]], zoom=2)
+          st.divider()
+          st.markdown("### 🌐 Распределение входов по странам и городам")
+          geo_summary = (
+              df_map_clean.groupby(["country", "city", "ip"])
+              .size()
+              .reset_index(name="Подключений")
+          )
+          st.dataframe(geo_summary, use_container_width=True)
+        else:
+          st.info("Координаты подключений пока не зафиксированы.")
+      else:
+        st.info("Нет данных для отображения карты.")
+
+  if "💡 Пробелы в знаниях & Отзывы" in s_tab_dict:
+    with s_tab_dict["💡 Пробелы в знаниях & Отзывы"]:
+      st.markdown(
+          "### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)"
+      )
+      st.caption(
+          "Автоматически зафиксированные вопросы, где релевантность базы"
+          " знаний была < 35%:"
+      )
+
+      if not df_logs_all.empty and "action" in df_logs_all.columns:
+        df_gaps = df_logs_all[df_logs_all["action"] == "KNOWLEDGE_GAP"]
+        if df_gaps.empty:
+          st.success("🎉 Вопросов без ответа не зафиксировано.")
+        else:
+          st.dataframe(
+              df_gaps[["timestamp", "username", "ip", "details"]],
+              use_container_width=True,
+          )
+      else:
+        st.info("Данные отсутствуют.")
+
+      st.divider()
+      st.markdown("### 👎 2. Замечания и негативные отзывы пользователей")
+      if not df_logs_all.empty and "action" in df_logs_all.columns:
+        df_neg = df_logs_all[df_logs_all["action"] == "FEEDBACK_NEGATIVE"]
+        if df_neg.empty:
+          st.success("🎉 Замечаний от пользователей пока нет.")
+        else:
+          st.dataframe(
+              df_neg[["timestamp", "username", "ip", "details"]],
+              use_container_width=True,
+          )
+      else:
+        st.info("Замечания отсутствуют.")
+
+      st.divider()
+      st.markdown("### 👍 3. Положительные отклики")
+      if not df_logs_all.empty and "action" in df_logs_all.columns:
+        df_pos = df_logs_all[df_logs_all["action"] == "FEEDBACK_POSITIVE"]
+        if df_pos.empty:
+          st.info("Положительные оценки пока не поступали.")
+        else:
+          st.dataframe(
+              df_pos[["timestamp", "username", "details"]],
+              use_container_width=True,
+          )
+
+  if "👥 Управление Аккаунтами" in s_tab_dict:
+    with s_tab_dict["👥 Управление Аккаунтами"]:
+      st.markdown("### 👥 Список зарегистрированных пользователей")
+
+      for login_key, u_info in st.session_state.users_db.items():
+        with st.expander(
+            f"👤 **{u_info['name']}** (`{login_key}`) — Роль:"
+            f" `{role_badges.get(u_info['role'], u_info['role'])}`",
+            expanded=True,
+        ):
+          col_u1, col_u2, col_u3 = st.columns([2, 2, 2])
+
+          with col_u1:
+            is_blk = u_info.get("is_blocked", False)
+            st.write(
+                f"**Статус:** {'🔴 ЗАБЛОКИРОВАН' if is_blk else '🟢 Активен'}"
+            )
+            st.write(
+                f"**Ошибок входа:** `{u_info.get('failed_attempts', 0)} / 3`"
             )
 
-            if (
-                not df_logs_all.empty
-                and "lat" in df_logs_all.columns
-                and "lon" in df_logs_all.columns
-            ):
-                df_map_data = df_logs_all.dropna(subset=["lat", "lon"]).copy()
-                df_map_data["lat"] = pd.to_numeric(df_map_data["lat"], errors="coerce")
-                df_map_data["lon"] = pd.to_numeric(df_map_data["lon"], errors="coerce")
-                df_map_clean = df_map_data.dropna(subset=["lat", "lon"])
-
-                if not df_map_clean.empty:
-                    st.map(df_map_clean[["lat", "lon"]], zoom=2)
-                    st.divider()
-                    st.markdown("### 🌐 Распределение входов по странам и городам")
-                    geo_summary = (
-                        df_map_clean.groupby(["country", "city", "ip"])
-                        .size()
-                        .reset_index(name="Подключений")
-                    )
-                    st.dataframe(geo_summary, use_container_width=True)
-                else:
-                    st.info("Координаты подключений пока не зафиксированы.")
-            else:
-                st.info("Нет данных для отображения карты.")
-
-    # --- ВКЛАДКА: ПРОБЕЛЫ В ЗНАНИЯХ & ОТЗЫВЫ ---
-    if "💡 Пробелы в знаниях & Отзывы" in s_tab_dict:
-        with s_tab_dict["💡 Пробелы в знаниях & Отзывы"]:
-            st.markdown(
-                "### 🔍 1. Вопросы, на которые AI не нашел ответа (Knowledge Gaps)"
+          with col_u2:
+            st.write(
+                f"**Лимит сессий:** `{u_info.get('max_connections', 1)}`"
             )
-            st.caption(
-                "Автоматически зафиксированные вопросы, где релевантность базы"
-                " знаний была < 35%:"
+            st.write(
+                f"**Активных сессий:** `{u_info.get('active_sessions', 0)}`"
             )
 
-            if not df_logs_all.empty and "action" in df_logs_all.columns:
-                df_gaps = df_logs_all[df_logs_all["action"] == "KNOWLEDGE_GAP"]
-                if df_gaps.empty:
-                    st.success("🎉 Вопросов без ответа не зафиксировано.")
-                else:
-                    st.dataframe(
-                        df_gaps[["timestamp", "username", "ip", "details"]],
-                        use_container_width=True,
-                    )
+          with col_u3:
+            if is_blk:
+              if st.button("🔓 Разблокировать", key=f"unblk_{login_key}"):
+                u_info["is_blocked"] = False
+                u_info["failed_attempts"] = 0
+                log_event(
+                    "UNBLOCK_USER",
+                    f"Собственник разблокировал пользователя '{login_key}'",
+                )
+                st.success("Пользователь разблокирован!")
+                st.rerun()
             else:
-                st.info("Данные отсутствуют.")
-
-            st.divider()
-            st.markdown("### 👎 2. Замечания и негативные отзывы пользователей")
-            if not df_logs_all.empty and "action" in df_logs_all.columns:
-                df_neg = df_logs_all[df_logs_all["action"] == "FEEDBACK_NEGATIVE"]
-                if df_neg.empty:
-                    st.success("🎉 Замечаний от пользователей пока нет.")
-                else:
-                    st.dataframe(
-                        df_neg[["timestamp", "username", "ip", "details"]],
-                        use_container_width=True,
-                    )
-            else:
-                st.info("Замечания отсутствуют.")
-
-            st.divider()
-            st.markdown("### 👍 3. Положительные отклики")
-            if not df_logs_all.empty and "action" in df_logs_all.columns:
-                df_pos = df_logs_all[df_logs_all["action"] == "FEEDBACK_POSITIVE"]
-                if df_pos.empty:
-                    st.info("Положительные оценки пока не поступали.")
-                else:
-                    st.dataframe(
-                        df_pos[["timestamp", "username", "details"]],
-                        use_container_width=True,
-                    )
-
-    # --- ВКЛАДКА: УПРАВЛЕНИЕ АККАУНТАМИ ---
-    if "👥 Управление Аккаунтами" in s_tab_dict:
-        with s_tab_dict["👥 Управление Аккаунтами"]:
-            st.markdown("### 👥 Список зарегистрированных пользователей")
-
-            for login_key, u_info in st.session_state.users_db.items():
-                with st.expander(
-                    f"👤 **{u_info['name']}** (`{login_key}`) — Роль:"
-                    f" `{role_badges.get(u_info['role'], u_info['role'])}`",
-                    expanded=True,
+              if login_key != "owner":
+                if st.button(
+                    "🔒 Заблокировать",
+                    key=f"blk_{login_key}",
+                    type="primary",
                 ):
-                    col_u1, col_u2, col_u3 = st.columns([2, 2, 2])
+                  u_info["is_blocked"] = True
+                  log_event(
+                      "BLOCK_USER",
+                      f"Собственник заблокировал пользователя '{login_key}'",
+                  )
+                  st.success("Пользователь заблокирован!")
+                  st.rerun()
 
-                    with col_u1:
-                        is_blk = u_info.get("is_blocked", False)
-                        st.write(
-                            f"**Статус:** {'🔴 ЗАБЛОКИРОВАН' if is_blk else '🟢 Активен'}"
-                        )
-                        st.write(
-                            f"**Ошибок входа:** `{u_info.get('failed_attempts', 0)} / 3`"
-                        )
+            if u_info.get("failed_attempts", 0) > 0:
+              if st.button(
+                  "🔄 Сбросить счетчик ошибок", key=f"rst_{login_key}"
+              ):
+                u_info["failed_attempts"] = 0
+                st.success("Ошибки сброшены!")
+                st.rerun()
 
-                    with col_u2:
-                        st.write(
-                            f"**Лимит сессий:** `{u_info.get('max_connections', 1)}`"
-                        )
-                        st.write(
-                            f"**Активных сессий:** `{u_info.get('active_sessions', 0)}`"
-                        )
+          new_max_conn = st.number_input(
+              "Максимум одновременных подключений:",
+              min_value=1,
+              max_value=20,
+              value=u_info.get("max_connections", 1),
+              key=f"mc_{login_key}",
+          )
+          if new_max_conn != u_info.get("max_connections", 1):
+            u_info["max_connections"] = new_max_conn
+            log_event(
+                "UPDATE_CONN_LIMIT",
+                f"Лимит сессий для '{login_key}' изменен на {new_max_conn}",
+            )
+            st.success("Лимит обновлен!")
+            st.rerun()
 
-                    with col_u3:
-                        if is_blk:
-                            if st.button("🔓 Разблокировать", key=f"unblk_{login_key}"):
-                                u_info["is_blocked"] = False
-                                u_info["failed_attempts"] = 0
-                                log_event(
-                                    "UNBLOCK_USER",
-                                    f"Собственник разблокировал пользователя '{login_key}'",
-                                )
-                                st.success("Пользователь разблокирован!")
-                                st.rerun()
-                        else:
-                            if login_key != "owner":
-                                if st.button(
-                                    "🔒 Заблокировать", key=f"blk_{login_key}", type="primary"
-                                ):
-                                    u_info["is_blocked"] = True
-                                    log_event(
-                                        "BLOCK_USER",
-                                        f"Собственник заблокировал пользователя '{login_key}'",
-                                    )
-                                    st.success("Пользователь заблокирован!")
-                                    st.rerun()
+      st.divider()
+      st.markdown("### ➕ Добавить нового пользователя")
+      with st.form("add_user_form"):
+        u_login = st.text_input("Логин:")
+        u_name = st.text_input("ФИО / Отображаемое имя:")
+        u_pass = st.text_input("Пароль:", type="password")
+        u_role = st.selectbox("Роль:", ["user", "admin", "owner"])
+        u_max_c = st.number_input(
+            "Лимит подключений:", min_value=1, max_value=10, value=1
+        )
 
-                        if u_info.get("failed_attempts", 0) > 0:
-                            if st.button(
-                                "🔄 Сбросить счетчик ошибок", key=f"rst_{login_key}"
-                            ):
-                                u_info["failed_attempts"] = 0
-                                st.success("Ошибки сброшены!")
-                                st.rerun()
-
-                    new_max_conn = st.number_input(
-                        "Максимум одновременных подключений:",
-                        min_value=1,
-                        max_value=20,
-                        value=u_info.get("max_connections", 1),
-                        key=f"mc_{login_key}",
-                    )
-                    if new_max_conn != u_info.get("max_connections", 1):
-                        u_info["max_connections"] = new_max_conn
-                        log_event(
-                            "UPDATE_CONN_LIMIT",
-                            f"Лимит сессий для '{login_key}' изменен на {new_max_conn}",
-                        )
-                        st.success("Лимит обновлен!")
-                        st.rerun()
-
-            st.divider()
-            st.markdown("### ➕ Добавить нового пользователя")
-            with st.form("add_user_form"):
-                u_login = st.text_input("Логин:")
-                u_name = st.text_input("ФИО / Отображаемое имя:")
-                u_pass = st.text_input("Пароль:", type="password")
-                u_role = st.selectbox("Роль:", ["user", "admin", "owner"])
-                u_max_c = st.number_input(
-                    "Лимит подключений:", min_value=1, max_value=10, value=1
-                )
-
-                if st.form_submit_button("Создать аккаунт", use_container_width=True):
-                    login_clean = u_login.strip().lower()
-                    if login_clean and u_pass:
-                        st.session_state.users_db[login_clean] = {
-                            "password": hash_password(u_pass),
-                            "role": u_role,
-                            "name": u_name if u_name else login_clean,
-                            "failed_attempts": 0,
-                            "is_blocked": False,
-                            "max_connections": u_max_c,
-                            "active_sessions": 0,
-                        }
-                        log_event(
-                            "CREATE_USER",
-                            f"Создан аккаунт '{login_clean}' (Роль: {u_role}, Лимит"
-                            f" сессий: {u_max_c})",
-                        )
-                        st.success(f"Аккаунт '{login_clean}' успешно создан!")
-                        st.rerun()
+        if st.form_submit_button("Создать аккаунт", use_container_width=True):
+          login_clean = u_login.strip().lower()
+          if login_clean and u_pass:
+            st.session_state.users_db[login_clean] = {
+                "password": hash_password(u_pass),
+                "role": u_role,
+                "name": u_name if u_name else login_clean,
+                "failed_attempts": 0,
+                "is_blocked": False,
+                "max_connections": u_max_c,
+                "active_sessions": 0,
+            }
+            log_event(
+                "CREATE_USER",
+                f"Создан аккаунт '{login_clean}' (Роль: {u_role}, Лимит"
+                f" сессий: {u_max_c})",
+            )
+            st.success(f"Аккаунт '{login_clean}' успешно создан!")
+            st.rerun()
