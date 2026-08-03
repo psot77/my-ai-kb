@@ -810,7 +810,7 @@ def fetch_real_estate_listings(
     min_area=0,
     max_area=1000,
     rooms_filter="Все",
-    owner_only=True,
+    owner_only=False,
     district_query="",
 ):
     try:
@@ -820,14 +820,11 @@ def fetch_real_estate_listings(
             deal_val = "rent" if ("Снять" in deal_type or "Аренд" in deal_type) else "sale"
             must_conditions.append(FieldCondition(key="deal_type", match=MatchValue(value=deal_val)))
 
-        if owner_only:
-            must_conditions.append(FieldCondition(key="parsed_data.is_broker", match=MatchValue(value=False)))
-
         scroll_filter = Filter(must=must_conditions) if must_conditions else None
 
         points, _ = qdrant.scroll(
             collection_name=RE_COLLECTION_NAME,
-            limit=100,
+            limit=200,
             scroll_filter=scroll_filter,
             with_payload=True,
             with_vectors=False,
@@ -843,16 +840,21 @@ def fetch_real_estate_listings(
             district = (parsed.get("district") or "").lower()
             address = (parsed.get("address") or "").lower()
             raw_text = (p.get("raw_text") or "").lower()
+            is_broker = parsed.get("is_broker")
 
-            # Фильтрация по цене (Min - Max)
+            # Фильтрация "Только от хозяина"
+            if owner_only and is_broker is not False:
+                continue
+
+            # Фильтрация по цене
             if price > 0 and (price < min_price or price > max_price):
                 continue
 
-            # Фильтрация по площади (Min - Max)
+            # Фильтрация по площади
             if area > 0 and (area < min_area or area > max_area):
                 continue
 
-            # Фильтрация по типу недвижимости (Квартира, Дом и т.д.)
+            # Фильтрация по типу недвижимости
             if property_type != "Все":
                 prop_key = property_type.lower()[:4]
                 combined_text = f"{district} {address} {raw_text}"
@@ -1576,7 +1578,7 @@ if st.session_state.view_mode == "chat":
 
                 t_llm_start = time.perf_counter()
                 res = groq_client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
+                    model="llama-3.1-8b-instant",
                     messages=[{"role": "user", "content": llm_prompt}],
                     temperature=0.1,
                 )
@@ -1627,11 +1629,11 @@ elif st.session_state.view_mode == "real_estate":
         # Горизонтальная панель выпадающих фильтров (Popover Bar)
         col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
 
-        # 1-я колонка: ФИЛЬТР "ОТ СОБСТВЕННИКА" НА ПЕРВОМ МЕСТЕ (ВКЛЮЧЕН ПО УМОЛЧАНИЮ)
+        # 1-я колонка: ФИЛЬТР "ОТ СОБСТВЕННИКА" (ОТКЛЮЧЕН ПО УМОЛЧАНИЮ ДЛЯ ПОКАЗА ВСЕХ ОБЪЕКТОВ)
         with col_f1:
             with st.popover("🏡 Собственник ˅", use_container_width=True):
                 st.markdown("**Источник объявления**")
-                f_owner_only = st.checkbox("🏡 Только от хозяина (без комиссии)", value=True, key="re_pop_owner")
+                f_owner_only = st.checkbox("🏡 Только от хозяина (без комиссии)", value=False, key="re_pop_owner")
                 f_deal_type = st.radio("Тип сделки:", ["Все", "Снять", "Купить"], key="re_pop_deal")
 
         with col_f2:
@@ -1780,7 +1782,7 @@ elif st.session_state.view_mode == "real_estate":
 Укажи цены, районы, ключевые плюсы каждого варианта и прямые рекомендации."""
 
                         res = groq_client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
+                            model="llama-3.1-8b-instant",
                             messages=[{"role": "user", "content": llm_re_prompt}],
                             temperature=0.2,
                         )
