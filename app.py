@@ -62,7 +62,7 @@ st.set_page_config(
 )
 
 # =====================================================================
-# CSS СТИЛИЗАЦИЯ И JAVASCRIPT ДЛЯ ИНТЕРФЕЙСА
+# CSS СТИЛИЗАЦИЯ (MAVBOT UI & НАТИВНЫЙ HTML DETAILS)
 # =====================================================================
 st.markdown(
     """
@@ -78,44 +78,45 @@ st.markdown(
     .user-profile-card { display: flex; align-items: center; gap: 10px; padding: 10px; background: #E8EEF5; border-radius: 16px; margin-top: 10px; }
     .user-avatar { width: 36px; height: 36px; border-radius: 50%; background-color: #4285F4; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; }
     
-    /* Стили кликабельной карточки недвижимости */
-    .re-card { 
+    /* Стили нативной раскрывающейся карточки (<details>) */
+    details.re-card { 
         background-color: #FFFFFF; 
         border: 1px solid #E1E8ED; 
         border-radius: 14px; 
         padding: 16px; 
         margin-bottom: 12px; 
         box-shadow: 0 2px 6px rgba(0,0,0,0.02);
-        cursor: pointer;
         transition: all 0.2s ease-in-out;
     }
-    .re-card:hover {
+    details.re-card:hover {
         border-color: #2563eb;
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
     }
+    
+    /* Скрытие стандартных стрелочек браузера у summary */
+    details.re-card > summary {
+        list-style: none !important;
+        outline: none !important;
+        cursor: pointer;
+    }
+    details.re-card > summary::-webkit-details-marker,
+    details.re-card > summary::marker {
+        display: none !important;
+    }
+
     .re-price { font-size: 20px; font-weight: 700; color: #1a73e8; }
     .re-badge { background-color: #e8f0fe; color: #1967d2; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-left: 4px; }
     .re-badge-owner { background-color: #e6f4ea; color: #137333; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-left: 4px; }
     
-    /* Синяя плашка Telegram и скрываемое описание */
+    /* Выделение синим Telegram и блок с описанием */
     .telegram-tag { color: #2563eb !important; font-weight: 700; }
-    .card-description { display: none; margin-top: 12px; }
+    .card-description { margin-top: 12px; }
     .description-divider { height: 1px; background-color: #f1f5f9; margin-bottom: 10px; }
     .description-text { color: #334155; font-size: 14px; line-height: 1.5; white-space: pre-line; }
 
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-thumb { background: #C4C7C5; border-radius: 10px; }
     </style>
-
-    <script>
-    function toggleCard(cardElement) {
-        const desc = cardElement.querySelector('.card-description');
-        if (desc) {
-            const isHidden = desc.style.display === 'none' || desc.style.display === '';
-            desc.style.display = isHidden ? 'block' : 'none';
-        }
-    }
-    </script>
     """,
     unsafe_allow_html=True,
 )
@@ -1200,7 +1201,9 @@ elif st.session_state.view_mode == "real_estate":
                     channel_name = item.get("channel", "Telegram")
                     raw_text = item.get("raw_text", "")
 
-                    card_html = f"""<div class="re-card" onclick="toggleCard(this)">
+                    # НАТИВНЫЙ HTML DETAILS ДЛЯ КЛИКАБЕЛЬНОЙ КАРТОЧКИ БЕЗ JS
+                    card_html = f"""<details class="re-card">
+<summary>
 <div style="display: flex; justify-content: space-between; align-items: center;">
 <span class="re-price">{price_str}</span>
 <div>
@@ -1213,11 +1216,12 @@ elif st.session_state.view_mode == "real_estate":
 <div style="margin-top: 6px; font-size: 13px; color: #5f6368;">
 {phone_lbl} | 💬 <strong class="telegram-tag">Telegram:</strong> {channel_name} | 🕒 {item.get('created_at', '')}
 </div>
+</summary>
 <div class="card-description">
 <div class="description-divider"></div>
 <div class="description-text">{raw_text}</div>
 </div>
-</div>"""
+</details>"""
                     st.markdown(card_html, unsafe_allow_html=True)
 
     with re_tabs[2]:
