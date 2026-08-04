@@ -108,8 +108,10 @@ st.markdown(
     .re-badge { background-color: #e8f0fe; color: #1967d2; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-left: 4px; }
     .re-badge-owner { background-color: #e6f4ea; color: #137333; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-left: 4px; }
     
-    /* Выделение синим Telegram и блок с описанием */
+    /* Цвета источников */
     .telegram-tag { color: #2563eb !important; font-weight: 700; }
+    .website-tag { color: #059669 !important; font-weight: 700; }
+    
     .card-description { margin-top: 12px; }
     .description-divider { height: 1px; background-color: #f1f5f9; margin-bottom: 10px; }
     .description-text { color: #334155; font-size: 14px; line-height: 1.5; white-space: pre-line; }
@@ -387,6 +389,7 @@ def init_services():
             "district",
             "post_type",
             "channel",
+            "source_type",
         ]:
             try:
                 qdrant.create_payload_index(
@@ -1059,10 +1062,9 @@ if st.session_state.view_mode == "chat":
         st.rerun()
 
 elif st.session_state.view_mode == "real_estate":
-    st.title("🏠 Мониторинг Недвижимости Telegram")
+    st.title("🏠 Мониторинг Недвижимости (Telegram & Веб-Сайты)")
     st.caption(
-        "Автоматическая жесткая фильтрация бытовых услуг и разделение предложений"
-        " объектов и клиентских запросов."
+        "Автоматический мониторинг, жесткая фильтрация бытовых услуг и дедупликация объектов из Telegram-каналов и веб-сайтов."
     )
 
     re_tabs = st.tabs([
@@ -1198,10 +1200,19 @@ elif st.session_state.view_mode == "real_estate":
                         else '<span class="re-badge">👔 Риелтор / Агентство</span>'
                     )
 
-                    channel_name = item.get("channel", "Telegram")
+                    # Определение источника (Telegram или Веб-сайт)
+                    is_website = item.get("source_type") == "website"
+                    web_url = item.get("web_url")
+                    channel_name = item.get("channel", "Сайт")
+
+                    if is_website and web_url:
+                        source_html = f"🌐 <strong class='website-tag'>Сайт:</strong> <a href='{web_url}' target='_blank' style='color: #059669; font-weight: 600; text-decoration: none;'>{channel_name} 🔗</a>"
+                    else:
+                        source_html = f"💬 <strong class='telegram-tag'>Telegram:</strong> {channel_name}"
+
                     raw_text = item.get("raw_text", "")
 
-                    # НАТИВНЫЙ HTML DETAILS ДЛЯ КЛИКАБЕЛЬНОЙ КАРТОЧКИ БЕЗ JS
+                    # НАТИВНЫЙ HTML DETAILS ДЛЯ КЛИКАБЕЛЬНОЙ КАРТОЧКИ
                     card_html = f"""<details class="re-card">
 <summary>
 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1214,7 +1225,7 @@ elif st.session_state.view_mode == "real_estate":
 </div>
 <div style="margin-top: 8px; font-weight: 600; color: #3c4043;">📍 {district_lbl} {f'— {address_lbl}' if address_lbl else ''}</div>
 <div style="margin-top: 6px; font-size: 13px; color: #5f6368;">
-{phone_lbl} | 💬 <strong class="telegram-tag">Telegram:</strong> {channel_name} | 🕒 {item.get('created_at', '')}
+{phone_lbl} | {source_html} | 🕒 {item.get('created_at', '')}
 </div>
 </summary>
 <div class="card-description">
