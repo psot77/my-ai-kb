@@ -62,7 +62,7 @@ st.set_page_config(
 )
 
 # =====================================================================
-# CSS СТИЛИЗАЦИЯ (MAVBOT UI)
+# CSS СТИЛИЗАЦИЯ И JAVASCRIPT ДЛЯ ИНТЕРФЕЙСА
 # =====================================================================
 st.markdown(
     """
@@ -77,19 +77,51 @@ st.markdown(
     div[data-testid="stSidebar"] div[data-testid="stPopover"] button { padding: 2px 6px !important; border-radius: 8px !important; font-size: 16px !important; }
     .user-profile-card { display: flex; align-items: center; gap: 10px; padding: 10px; background: #E8EEF5; border-radius: 16px; margin-top: 10px; }
     .user-avatar { width: 36px; height: 36px; border-radius: 50%; background-color: #4285F4; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; }
-    .re-card { background-color: #FFFFFF; border: 1px solid #E1E8ED; border-radius: 14px; padding: 16px; margin-bottom: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.02); }
+    
+    /* Стили кликабельной карточки недвижимости */
+    .re-card { 
+        background-color: #FFFFFF; 
+        border: 1px solid #E1E8ED; 
+        border-radius: 14px; 
+        padding: 16px; 
+        margin-bottom: 12px; 
+        box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+        cursor: pointer;
+        transition: all 0.2s ease-in-out;
+    }
+    .re-card:hover {
+        border-color: #2563eb;
+        box-shadow: 0 4px 12px rgba(37, 99, 235, 0.08);
+    }
     .re-price { font-size: 20px; font-weight: 700; color: #1a73e8; }
     .re-badge { background-color: #e8f0fe; color: #1967d2; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-left: 4px; }
     .re-badge-owner { background-color: #e6f4ea; color: #137333; padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; margin-left: 4px; }
+    
+    /* Синяя плашка Telegram и скрываемое описание */
+    .telegram-tag { color: #2563eb !important; font-weight: 700; }
+    .card-description { display: none; margin-top: 12px; }
+    .description-divider { height: 1px; background-color: #f1f5f9; margin-bottom: 10px; }
+    .description-text { color: #334155; font-size: 14px; line-height: 1.5; white-space: pre-line; }
+
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-thumb { background: #C4C7C5; border-radius: 10px; }
     </style>
+
+    <script>
+    function toggleCard(cardElement) {
+        const desc = cardElement.querySelector('.card-description');
+        if (desc) {
+            const isHidden = desc.style.display === 'none' || desc.style.display === '';
+            desc.style.display = isHidden ? 'block' : 'none';
+        }
+    }
+    </script>
     """,
     unsafe_allow_html=True,
 )
 
 # =====================================================================
-# ВСПАМОГАТЕЛЬНЫЕ ФУНКЦИИ БЕЗОПАСНОГО ПРИВЕДЕНИЯ ТИПОВ
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ БЕЗОПАСНОГО ПРИВЕДЕНИЯ ТИПОВ
 # =====================================================================
 def safe_float(val) -> float:
     if isinstance(val, list):
@@ -353,6 +385,7 @@ def init_services():
             "deal_type",
             "district",
             "post_type",
+            "channel",
         ]:
             try:
                 qdrant.create_payload_index(
@@ -647,11 +680,11 @@ NON_REAL_ESTATE_KEYWORDS = [
     "занятия", "заняття", "дефіцит", "можливо й так",
     "исполнитель", "виконавець", "исполнителя", "виконавця", "по факту выполнения",
     "по факту виконання", "не откликайтесь", "не відгукуйтесь", "задание", "завдання",
-    "подработать", "підробити", "доведёте дело", "доведете справу"
+    "подработать", "підробити", "доведёте дело", "доведете справу", "в особисті", "в личку", "відповіли"
 ]
 
 REAL_ESTATE_KEYWORDS = [
-    "квартир", "будинок", "дом", "кімнат", "комнат", "приміщен", "помещен", "офіс",
+    "квартир", "будинок", "дом", "кімнат", "комнат", "приміщен", "помещ", "офіс",
     "офис", "ділянк", "участок", "жиль", "житл", "жк", "снять", "знять", "винайм",
     "аренд", "оренд", "продам", "продаж", "сдам", "здам", "койко"
 ]
@@ -661,19 +694,14 @@ def determine_post_type_dynamically(payload: dict) -> str:
     raw_text = safe_str(payload.get("raw_text")).lower()
     parsed = payload.get("parsed_data") or {}
 
-    # 1. Отсеиваем по расширенному черному списку
     for tk in NON_REAL_ESTATE_KEYWORDS:
         if tk in raw_text:
             return "trash"
 
-    # 2. ОСТРОГАЯ ПРОВЕРКА: В сыром тексте ОБЯЗАТЕЛЬНО должно быть слово недвижимости!
-    # Наличие цифр (как 17000 за работу) больше не дает права считаться объявлением.
     has_re_terms = any(rk in raw_text for rk in REAL_ESTATE_KEYWORDS)
-
     if not has_re_terms:
         return "trash"
 
-    # 3. Разделяем предложения и запросы клиентов
     is_demand = any(
         dk in raw_text
         for dk in [
@@ -742,8 +770,8 @@ def fetch_real_estate_listings(
             area = safe_float(parsed.get("area_sqm"))
             rooms = parsed.get("rooms")
 
-            district = safe_str(parsed.get("district")).lower()
-            address = safe_str(parsed.get("address")).lower()
+            district = safe_str(parsed.get("district") or p.get("district")).lower()
+            address = safe_str(parsed.get("address") or p.get("address")).lower()
             raw_text = safe_str(p.get("raw_text")).lower()
             is_broker = parsed.get("is_broker")
 
@@ -1145,18 +1173,34 @@ elif st.session_state.view_mode == "real_estate":
                     )
                     rooms_val = safe_int(parsed.get("rooms"))
                     rooms_lbl = f"{rooms_val} к." if rooms_val > 0 else "Комнаты не указаны"
-                    district_lbl = parsed.get("district") or "Район не указан"
-                    address_lbl = parsed.get("address") or ""
-                    phone_lbl = parsed.get("phone") or "Телефон не указан"
-                    is_broker = parsed.get("is_broker")
+                    district_lbl = parsed.get("district") or item.get("district") or "Район не указан"
+                    address_lbl = parsed.get("address") or item.get("address") or ""
+                    
+                    # Формирование блока телефона / профиля TG
+                    phone_val = parsed.get("phone") or item.get("phone")
+                    tg_user = item.get("telegram_username")
+                    tg_link = item.get("telegram_link")
 
+                    if phone_val:
+                        phone_lbl = f"📞 {phone_val}"
+                    elif tg_user:
+                        phone_lbl = f"✈️ <a href='https://t.me/{tg_user}' target='_blank'>@{tg_user}</a>"
+                    elif tg_link:
+                        phone_lbl = f"✈️ <a href='{tg_link}' target='_blank'>Написать в TG</a>"
+                    else:
+                        phone_lbl = "📞 Телефон не указан"
+
+                    is_broker = parsed.get("is_broker")
                     broker_tag = (
                         '<span class="re-badge-owner">🏡 От хозяина</span>'
                         if is_broker is False
                         else '<span class="re-badge">👔 Риелтор / Агентство</span>'
                     )
 
-                    card_html = f"""<div class="re-card">
+                    channel_name = item.get("channel", "Telegram")
+                    raw_text = item.get("raw_text", "")
+
+                    card_html = f"""<div class="re-card" onclick="toggleCard(this)">
 <div style="display: flex; justify-content: space-between; align-items: center;">
 <span class="re-price">{price_str}</span>
 <div>
@@ -1166,11 +1210,15 @@ elif st.session_state.view_mode == "real_estate":
 </div>
 </div>
 <div style="margin-top: 8px; font-weight: 600; color: #3c4043;">📍 {district_lbl} {f'— {address_lbl}' if address_lbl else ''}</div>
-<div style="margin-top: 4px; font-size: 13px; color: #5f6368;">📞 {phone_lbl} | 💬 Канал: <b>{item.get('channel', 'Telegram')}</b> | 🕒 {item.get('created_at', '')}</div>
+<div style="margin-top: 6px; font-size: 13px; color: #5f6368;">
+{phone_lbl} | 💬 <strong class="telegram-tag">Telegram:</strong> {channel_name} | 🕒 {item.get('created_at', '')}
+</div>
+<div class="card-description">
+<div class="description-divider"></div>
+<div class="description-text">{raw_text}</div>
+</div>
 </div>"""
                     st.markdown(card_html, unsafe_allow_html=True)
-                    with st.expander("📄 Описание из Telegram"):
-                        st.text(item.get("raw_text", ""))
 
     with re_tabs[2]:
         st.subheader("🤖 AI Поиск объектов")
