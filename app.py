@@ -111,6 +111,8 @@ st.markdown(
     /* Цвета источников */
     .telegram-tag { color: #2563eb !important; font-weight: 700; }
     .website-tag { color: #059669 !important; font-weight: 700; }
+    .viber-tag { color: #7d5bbe !important; font-weight: 700; }
+    .whatsapp-tag { color: #25d366 !important; font-weight: 700; }
     
     .card-description { margin-top: 12px; }
     .description-divider { height: 1px; background-color: #f1f5f9; margin-bottom: 10px; }
@@ -670,26 +672,58 @@ def get_db_files_summary():
 
 
 # =====================================================================
-# ДИНАМИЧЕСКИЙ СБОР УНИКАЛЬНЫХ ИСТОЧНИКОВ ИЗ QDRANT
+# ВСПМОГАТЕЛЬНАЯ КАТЕГОРИЗАЦИЯ И СБОР ИСТОЧНИКОВ
 # =====================================================================
-def get_unique_re_sources() -> list:
-    """Автоматически запрашивает все уникальные источники (channel) из коллекции недвижимости"""
+def categorize_item_source(payload: dict) -> str:
+    """Определяет категорию источника объекта"""
+    st_type = safe_str(payload.get("source_type")).strip().lower()
+    ch = safe_str(payload.get("channel")).strip().lower()
+
+    if st_type == "website" or any(d in ch for d in [".ua", ".com", ".net", "olx", "rieltor", "dom.ria", "100realty", "est"]):
+        return "Сайты"
+    if st_type == "viber" or "viber" in ch:
+        return "Viber"
+    if st_type == "whatsapp" or "whatsapp" in ch or "wa" in ch:
+        return "WhatsApp"
+    if st_type == "jk_group" or "жк" in ch or "комплекс" in ch:
+        return "Группы ЖК"
+    return "Telegram"
+
+
+def get_unique_re_sources_structured() -> dict:
+    """Запрашивает Qdrant и возвращает словарь с ресурсами, сгруппированными по типам"""
     try:
         points, _ = qdrant.scroll(
             collection_name=RE_COLLECTION_NAME,
             limit=1000,
-            with_payload=["channel"],
+            with_payload=["channel", "source_type"],
             with_vectors=False,
         )
-        sources = set()
+        cat_map = {
+            "Telegram": set(),
+            "Viber": set(),
+            "WhatsApp": set(),
+            "Сайты": set(),
+            "Группы ЖК": set(),
+        }
         for pt in points:
             p = pt.payload or {}
-            ch = p.get("channel")
-            if ch and str(ch).strip():
-                sources.add(str(ch).strip())
-        return sorted(list(sources))
+            ch = safe_str(p.get("channel")).strip()
+            if not ch:
+                continue
+
+            category = categorize_item_source(p)
+            cat_map[category].add(ch)
+
+        return {k: sorted(list(v)) for k, v in cat_map.items()}
     except Exception:
-        return []
+        return {
+            "Telegram": [],
+            "Viber": [],
+            "WhatsApp": [],
+            "Сайты": [],
+            "Группы ЖК": [],
+        }
 
 
 # =====================================================================
@@ -761,7 +795,8 @@ def fetch_real_estate_listings(
     rooms_filter="Все",
     owner_only=False,
     district_query="",
-    channel_filter="Все",
+    source_cat_filter="Все категории",
+    channel_filter="Все ресурсы",
 ):
     try:
         must_conditions = []
@@ -794,10 +829,17 @@ def fetch_real_estate_listings(
             if item_post_type != post_type or item_post_type == "trash":
                 continue
 
-            # Фильтрация по источнику
-            channel_val = safe_str(p.get("channel")).strip()
-            if channel_filter != "Все" and channel_val != channel_filter:
-                continue
+            # 1. Фильтрация по категории источника (Telegram, Viber, WhatsApp, Сайты, Группы ЖК)
+            if source_cat_filter != "Все категории":
+                item_cat = categorize_item_source(p)
+                if item_cat != source_cat_filter:
+                    continue
+
+            # 2. Фильтрация по конкретному выбранному ресурсу / каналу
+            if channel_filter and not channel_filter.startswith("Все"):
+                channel_val = safe_str(p.get("channel")).strip()
+                if channel_val != channel_filter:
+                    continue
 
             price = safe_float(parsed.get("price_usd"))
             area = safe_float(parsed.get("area_sqm"))
@@ -1091,9 +1133,9 @@ if st.session_state.view_mode == "chat":
         st.rerun()
 
 elif st.session_state.view_mode == "real_estate":
-    st.title("🏠 Мониторинг Недвижимости (Telegram & Веб-Сайты)")
+    st.title("🏠 Мониторинг Недвижимости (Telegram, Мессенджеры & Веб-Сайты)")
     st.caption(
-        "Автоматический мониторинг, жесткая фильтрация бытовых услуг и дедупликация объектов из Telegram-каналов и веб-сайтов."
+        "Автоматический мониторинг, фильтрация по категориям источников и дедупликация объектов из Telegram, Viber, WhatsApp, Групп ЖК и Сайтов."
     )
 
     re_tabs = st.tabs([
@@ -1102,40 +1144,61 @@ elif st.session_state.view_mode == "real_estate":
         "🤖 AI-Подбор под запрос",
     ])
 
-    # Динамически получаем актуальные источники из Qdrant
-    dynamic_sources = ["Все"] + get_unique_re_sources()
+    # Динамический сгруппированный список источников из Qdrant Cloud
+    sources_dict = get_unique_re_sources_structured()
 
     for tab_idx, target_type in enumerate(["offer", "demand"]):
         with re_tabs[tab_idx]:
             col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+            
+            # 📡 1. ОТДЕЛЬНАЯ КНОПКА-ПОПОВЕР ДЛЯ ИСТОЧНИКОВ
             with col_f1:
                 with st.popover(
-                    "🏡 Источник / Сделка ˅",
+                    "📡 Источник ˅",
                     use_container_width=True,
-                    key=f"p1_{target_type}",
+                    key=f"p_src_{target_type}",
                 ):
                     f_owner_only = st.checkbox(
                         "🏡 Только от хозяина", value=False, key=f"re_owner_{target_type}"
                     )
+                    st.divider()
+                    
+                    # Шаг 1: Выбор категории источника
+                    f_source_cat = st.selectbox(
+                        "Тип источника:",
+                        ["Все категории", "Telegram", "Viber", "WhatsApp", "Сайты", "Группы ЖК"],
+                        key=f"re_src_cat_{target_type}",
+                    )
+                    
+                    # Шаг 2: Выпадающий список конкретных ресурсов в выбранной категории
+                    if f_source_cat == "Все категории":
+                        all_ch = []
+                        for ch_list in sources_dict.values():
+                            all_ch.extend(ch_list)
+                        available_channels = ["Все ресурсы"] + sorted(list(set(all_ch)))
+                    else:
+                        available_channels = [f"Все в {f_source_cat}"] + sources_dict.get(f_source_cat, [])
+
+                    f_channel = st.selectbox(
+                        "Конкретный ресурс / канал:",
+                        available_channels,
+                        key=f"re_channel_{target_type}",
+                    )
+
+            # 🤝 2. ТИП СДЕЛИ И ОБЪЕКТА
+            with col_f2:
+                with st.popover(
+                    "🤝 Сделка & Тип ˅",
+                    use_container_width=True,
+                    key=f"p2_{target_type}",
+                ):
                     f_deal_type = st.radio(
                         "Тип сделки:",
                         ["Все", "Снять", "Купить"],
                         key=f"re_deal_{target_type}",
                     )
-                    f_channel = st.selectbox(
-                        "Источник (Сайт/TG):",
-                        dynamic_sources,
-                        key=f"re_channel_{target_type}",
-                    )
-
-            with col_f2:
-                with st.popover(
-                    "🏠 Тип объекта ˅",
-                    use_container_width=True,
-                    key=f"p2_{target_type}",
-                ):
                     f_prop_type = st.selectbox(
-                        "Тип:",
+                        "Тип объекта:",
                         [
                             "Все",
                             "Квартира",
@@ -1147,6 +1210,7 @@ elif st.session_state.view_mode == "real_estate":
                         key=f"re_prop_{target_type}",
                     )
 
+            # 💰 3. ЦЕНА ($)
             with col_f3:
                 with st.popover(
                     "💰 Цена ($) ˅", use_container_width=True, key=f"p3_{target_type}"
@@ -1166,6 +1230,7 @@ elif st.session_state.view_mode == "real_estate":
                         key=f"re_pmax_{target_type}",
                     )
 
+            # 🚪 4. КОМНАТЫ
             with col_f4:
                 with st.popover(
                     "🚪 Комнаты ˅", use_container_width=True, key=f"p4_{target_type}"
@@ -1176,6 +1241,7 @@ elif st.session_state.view_mode == "real_estate":
                         key=f"re_rooms_{target_type}",
                     )
 
+            # 📍 5. РАЙОН И УЛИЦА
             with col_f5:
                 with st.popover(
                     "⚙️ Фильтры ˅", use_container_width=True, key=f"p5_{target_type}"
@@ -1184,6 +1250,7 @@ elif st.session_state.view_mode == "real_estate":
                         "Район / Улица:", key=f"re_dist_{target_type}"
                     )
 
+            # Выгрузка с учетом новых фильтров источника
             listings = fetch_real_estate_listings(
                 post_type=target_type,
                 deal_type=f_deal_type,
@@ -1193,6 +1260,7 @@ elif st.session_state.view_mode == "real_estate":
                 rooms_filter=f_rooms,
                 owner_only=f_owner_only,
                 district_query=f_district,
+                source_cat_filter=f_source_cat,
                 channel_filter=f_channel,
             )
 
@@ -1217,7 +1285,7 @@ elif st.session_state.view_mode == "real_estate":
                     district_lbl = parsed.get("district") or item.get("district") or "Район не указан"
                     address_lbl = parsed.get("address") or item.get("address") or ""
                     
-                    # Формирование блока телефона / профиля TG
+                    # Блок контактов
                     phone_val = parsed.get("phone") or item.get("phone")
                     tg_user = item.get("telegram_username")
                     tg_link = item.get("telegram_link")
@@ -1238,19 +1306,25 @@ elif st.session_state.view_mode == "real_estate":
                         else '<span class="re-badge">👔 Риелтор / Агентство</span>'
                     )
 
-                    # Определение источника (Telegram или Веб-сайт)
-                    is_website = item.get("source_type") == "website"
-                    web_url = item.get("web_url")
+                    # Подсветка разных типов источников
+                    item_cat = categorize_item_source(item)
                     channel_name = item.get("channel", "Сайт")
+                    web_url = item.get("web_url")
 
-                    if is_website and web_url:
+                    if item_cat == "Сайты" and web_url:
                         source_html = f"🌐 <strong class='website-tag'>Сайт:</strong> <a href='{web_url}' target='_blank' style='color: #059669; font-weight: 600; text-decoration: none;'>{channel_name} 🔗</a>"
+                    elif item_cat == "Viber":
+                        source_html = f"🟣 <strong class='viber-tag'>Viber:</strong> {channel_name}"
+                    elif item_cat == "WhatsApp":
+                        source_html = f"🟢 <strong class='whatsapp-tag'>WhatsApp:</strong> {channel_name}"
+                    elif item_cat == "Группы ЖК":
+                        source_html = f"🏢 <strong>Группа ЖК:</strong> {channel_name}"
                     else:
                         source_html = f"💬 <strong class='telegram-tag'>Telegram:</strong> {channel_name}"
 
                     raw_text = item.get("raw_text", "")
 
-                    # НАТИВНЫЙ HTML DETAILS ДЛЯ КЛИКАБЕЛЬНОЙ КАРТОЧКИ
+                    # Карточка объявления (HTML Details)
                     card_html = f"""<details class="re-card">
 <summary>
 <div style="display: flex; justify-content: space-between; align-items: center;">
