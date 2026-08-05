@@ -670,6 +670,29 @@ def get_db_files_summary():
 
 
 # =====================================================================
+# ДИНАМИЧЕСКИЙ СБОР УНИКАЛЬНЫХ ИСТОЧНИКОВ ИЗ QDRANT
+# =====================================================================
+def get_unique_re_sources() -> list:
+    """Автоматически запрашивает все уникальные источники (channel) из коллекции недвижимости"""
+    try:
+        points, _ = qdrant.scroll(
+            collection_name=RE_COLLECTION_NAME,
+            limit=1000,
+            with_payload=["channel"],
+            with_vectors=False,
+        )
+        sources = set()
+        for pt in points:
+            p = pt.payload or {}
+            ch = p.get("channel")
+            if ch and str(ch).strip():
+                sources.add(str(ch).strip())
+        return sorted(list(sources))
+    except Exception:
+        return []
+
+
+# =====================================================================
 # РАСШИРЕННЫЙ ФИЛЬТР МУСОРА И ОБЯЗАТЕЛЬНАЯ ПРОВЕРКА ТЕМЫ НЕДВИЖИМОСТИ
 # =====================================================================
 NON_REAL_ESTATE_KEYWORDS = [
@@ -738,6 +761,7 @@ def fetch_real_estate_listings(
     rooms_filter="Все",
     owner_only=False,
     district_query="",
+    channel_filter="Все",
 ):
     try:
         must_conditions = []
@@ -768,6 +792,11 @@ def fetch_real_estate_listings(
             item_post_type = determine_post_type_dynamically(p)
 
             if item_post_type != post_type or item_post_type == "trash":
+                continue
+
+            # Фильтрация по источнику
+            channel_val = safe_str(p.get("channel")).strip()
+            if channel_filter != "Все" and channel_val != channel_filter:
                 continue
 
             price = safe_float(parsed.get("price_usd"))
@@ -1073,6 +1102,9 @@ elif st.session_state.view_mode == "real_estate":
         "🤖 AI-Подбор под запрос",
     ])
 
+    # Динамически получаем актуальные источники из Qdrant
+    dynamic_sources = ["Все"] + get_unique_re_sources()
+
     for tab_idx, target_type in enumerate(["offer", "demand"]):
         with re_tabs[tab_idx]:
             col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
@@ -1089,6 +1121,11 @@ elif st.session_state.view_mode == "real_estate":
                         "Тип сделки:",
                         ["Все", "Снять", "Купить"],
                         key=f"re_deal_{target_type}",
+                    )
+                    f_channel = st.selectbox(
+                        "Источник (Сайт/TG):",
+                        dynamic_sources,
+                        key=f"re_channel_{target_type}",
                     )
 
             with col_f2:
@@ -1156,6 +1193,7 @@ elif st.session_state.view_mode == "real_estate":
                 rooms_filter=f_rooms,
                 owner_only=f_owner_only,
                 district_query=f_district,
+                channel_filter=f_channel,
             )
 
             st.markdown(f"Найдено чистых целевых записей: **{len(listings)}**")
